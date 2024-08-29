@@ -1,0 +1,234 @@
+---
+title: "POEM TX Cohort Pull"
+date: today
+format: 
+  docx:
+    df-print: paged
+    page-layout: full
+    fig-width: 12
+    fig-height: 8
+    out-width: 100%
+  html:
+    fig-width: 12
+    fig-height: 8
+editor: visual
+execute: 
+  echo: false
+  warning: false
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup}
+#| echo: false
+#| warning: false
+#| 
+
+# Load packages 
+pacman::p_load(RPostgres, DBI, keyring, janitor, tidyverse, readxl,
+               gtsummary, ggplot2, labelled, clipr, viridis, ggrepel, scales,   ggthemes, flextable, DiagrammeR,
+               odbc, openxlsx, beepr, tictoc, here)
+
+#### Setup File Paths ####
+# Get the location of this current .R file 
+current_dir <- here::here()
+
+#### Database Connection 
+spc <- dbConnect(odbc::odbc(),
+	 dsn = "SPC")
+
+options(scipen = 999)
+
+```
+
+```{r flex-table-func}
+FitFlextableToPage <- function(ft, pgwidth = 6){
+
+  ft_out <- ft %>% autofit()
+
+  ft_out <- width(ft_out, width = dim(ft_out)$widths*pgwidth /(flextable_dim(ft_out)$widths))
+  return(ft_out)
+}
+
+```
+
+# Record Counts (pre-Episode Algorithm Logic)
+
+Using the steps laid out in the `Episode Algorithm` tab of the `Data Harmonization Tracker`, the count of records (FY19-23 files, filtering starting 2019-01-01):
+
+```{r get-record-counts}
+record.counts <- dbGetQuery(spc, "select 1 as step, 
+       'All DX LB/SB records' as description, 
+       count( distinct client_nbr  +  cast(clm_to_date  as varchar) +  cast(outcome_type  as varchar)) record_count
+  from chcdwork.dbo.poem_all_dx
+  union all
+  select 2,
+        'After removing contradictory records', 
+       count( distinct client_nbr  +  cast(clm_to_date  as varchar) +  cast(outcome_type  as varchar))
+  from chcdwork.dbo.poem_all_dx_streaks
+ union all
+  select 3,
+        'After removing records associated with bundles', 
+       count( distinct client_nbr  +  cast(clm_to_date  as varchar) +  cast(outcome_type  as varchar))
+  from chcdwork.dbo.poem_episodes_raw
+ ; ")
+
+```
+
+```{r}
+record.counts %>% flextable() %>% theme_box() %>% FitFlextableToPage()
+```
+
+-   A record refers to a unique combination of \[client_nbr + clm_to_date + outcome_type (LB/SB)\]
+-   Contradictory record is a record such that the same person has a record that same day with a different outcome type (LB vs SB)
+-   The bundles are series of claims that would typically upset the algorithm and be flagged as false positives. They consist of cases where an individual has a pregnancy code repeating every month for a span of six-months or greater. They would generally need to be inspected on a case by case basis to see what date to assign. UT usually removes these from pregnancy-related analyses.
+
+{{< pagebreak >}}
+
+# All Episodes
+
+```{r}
+all.episodes <- dbGetQuery(spc, "select count( distinct client_nbr  +  cast(clm_to_date  as varchar) +  cast(outcome_type  as varchar)) as count
+     from chcdwork.dbo.poem_episodes_build; ")$count |> as.integer()
+
+all.women <- dbGetQuery(spc, "select count( distinct client_nbr) as count
+     from chcdwork.dbo.poem_episodes_build; ")$count |> as.integer()
+
+
+all.episodes.enrollment <- dbGetQuery(spc, "select count( distinct client_nbr  +  cast(clm_to_date  as varchar) +  cast(outcome_type  as varchar)) as count
+     from chcdwork.dbo.poem_episodes_enrollment; ")$count |> as.integer()
+
+all.women.enrollment <- dbGetQuery(spc, "select count( distinct client_nbr) as count
+     from chcdwork.dbo.poem_episodes_enrollment; ")$count |> as.integer()
+```
+
+After running the algorithm, we find a possible `r all.episodes` episodes (N=`r all.women` distinct ids). This is before joining to any sort of enrollment table, so it may contain placeholder ids or those that never had enrollment at any time (no way to verify age, etc.).
+
+If we condition, as we have to eventually, on enrollment (at any point), we get `r all.episodes.enrollment` episodes (N=`r all.women.enrollment` distinct ids).
+
+```{r clean-data}
+# Grab Data 
+episodes <- dbGetQuery(spc, "select * from chcdwork.dbo.poem_episodes_enrollment ;")
+
+episodes <- episodes %>%
+  mutate(
+    race_desc = case_when(
+      race_cd == 1 ~ "White, non-Hispanic",
+      race_cd == 2 ~ "Black, non-Hispanic",
+      race_cd == 3 ~ "Hispanic",
+      race_cd == 4 ~ "American Indian or Alaskan",
+      race_cd == 5 ~ "Asian, Pacific Islander",
+      race_cd == 6 ~ "Unknown/Other",
+      TRUE ~  "Unknown/Other"
+    ),
+    me_desc = case_when(
+      me_code == "B" ~ "Pregnancy",
+      me_code == "C" ~ "Emergency",
+      me_code == "D" ~ "Other",
+      me_code == "F" ~ "Other",
+      me_code == "I" ~ "Institutional regular (CATS 1 3 or 4) (BP16 or 17)",
+      me_code == "N" ~ "FFCHE (Former Foster Child in Higher Education)",
+      me_code == "P" ~ "Three months prior",
+      me_code == "Q" ~ "QMD coverage (Medicare only)",
+      me_code == "R" ~ "Regular",
+      me_code == "T" ~ "1929(b) Base plan 20 MAO client",
+      me_code == "W" ~ "Healthy Texas Women",
+      TRUE ~ "Unknown (or Not Enrolled)"
+    ),
+    age_group = case_when(
+    age <= 14 ~ "0-14",
+    age >= 15 & age <= 24 ~ "15-24",
+    age >= 25 & age <= 34 ~ "25-34",
+    age >= 35 & age <= 44 ~ "35-44",
+    age >= 45 & age <= 54 ~ "45-54",
+    age >= 55 & age <= 64 ~ "55-64",
+    age >= 65 & age <= 74 ~ "65-74",
+    age >= 75 ~ "75+",
+    TRUE ~ NA_character_
+  ),
+     state_tx = case_when(
+      state == "TX" ~ "TX",
+      state != "TX" ~ "Non-TX",
+      TRUE ~ "Unknown"
+    )
+  )
+
+var_label(episodes) <- list(
+    year = "Year",
+    age = "Age",
+    race_desc = "Race/Ethnicity",
+    age_group = "Age Group",
+    enrollment_table = "Enrollment Table (Month of birth episode)",
+    me_desc = "Enrollment Category (Month of birth episode)",
+    state_tx = "State (Month of birth episode)",
+    outcome_type = "Birth Outcome"
+  )
+
+```
+
+### Distribution of cohort criteria (pre-filtering/pre-exclusion):
+
+```{r}
+episodes %>% 
+  select(outcome_type, year, age_group, state_tx) %>%
+  tbl_summary()  %>% as_flex_table() %>% 
+  theme_box() %>%
+  padding(padding = 1.5) %>%
+  autofit() 
+
+```
+
+-   Non-TX is according to UDS zip to ZCTA crosswalk, which includes more zips than the HUD crosswalks (PO Boxes, in particular)
+-   0 - 14 age group mostly infants (spot checked enrollment on random records)
+
+{{< pagebreak >}}
+
+## Characteristics after filtering for age (15 to 55 inclusive) and TX residence at time of birth
+
+```{r}
+cohort <- 
+episodes %>% 
+  filter(age >= 15 & age <= 55) %>%
+  filter(state_tx == 'TX')
+```
+
+```{r}
+cohort %>% 
+  select(outcome_type, year, race_desc, age_group, enrollment_table, me_desc, state_tx) %>%
+  tbl_summary()  %>% as_flex_table() %>% 
+  theme_box() %>%
+  padding(padding = 1.5) %>%
+  autofit() 
+```
+
+-   Age is based on the most common birth date when a person had multiple DOB
+-   Filtering to TX is based on enrollment the month of the episode, so it implicitly filters out anyone not enrolled the month of their birth. (If that is a problem)
+-   Race is based on enrollment the month of the episode, so someone might have race recorded elsewhere else if enrollment said "Unknown" that month.
+
+{{< pagebreak >}}
+
+# Dates associated with Pregnancy
+
+Combining all possible dates together (admit, discharge, claim_from_date, claim_to_date) to see the distribution of dates for a single episode, we see:
+
+```{r}
+dates.per.episode <- dbGetQuery(spc, " with get_count as (
+ select client_nbr , ep_num , count(distinct date_) as c
+  from CHCDWORK.dbo.poem_episodes_alldates
+  group by client_nbr , ep_num 
+  )
+  select c as unique_dates_per_episode, count(distinct client_nbr + cast(ep_num as varchar)) as episode_count
+    from get_count
+    group by c
+    order by c;
+    ")
+
+dates.per.episode %>% flextable() %>% 
+  theme_box() %>%
+  padding(padding = 1.5) %>%
+  autofit() 
+
+# ggplot(dates.per.episode, aes(x=unique_dates_per_episode, y=episode_count)) +
+#   geom_bar(stat = "identity")
+
+```
