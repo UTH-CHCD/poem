@@ -82,37 +82,6 @@ from get_dx a
 join chcdwork.dbo.poem_codeset_births b
   on a.dx_cd = b.cd;
  
- /*
-  * Quarantine contradiction records 
-  * Get rid of records that contradict eachother (different outcome same claim date)
-  */
-/* --- put into a quarantine table
- drop table if exists chcdwork.dbo.poem_all_dx_streaks_contradictions;
- 
-select * 
- into chcdwork.dbo.poem_all_dx_streaks_contradictions
- from chcdwork.dbo.poem_all_dx a
-where exists (
-    select 1
-    from chcdwork.dbo.poem_all_dx b
-    where a.client_nbr = b.client_nbr
-    and a.clm_to_date = b.clm_to_date
-    and a.outcome_type <> b.outcome_type 
-);
-
---- delete from main records 
-delete a
-from chcdwork.dbo.poem_all_dx a
-where exists (
-    select 1
-    from chcdwork.dbo.poem_all_dx b
-    where a.client_nbr = b.client_nbr
-    and a.clm_to_date = b.clm_to_date
-    and a.outcome_type <> b.outcome_type
-);*/
-
-
--- delete FROM chcdwork.dbo.poem_all_dx WHERE client_nbr = '000000000';
  
 -----------------
 -- Simplify 
@@ -126,24 +95,49 @@ drop table if exists chcdwork.dbo.poem_all_dx_simplify;
   where bill_type is not null
   order by client_nbr;
  
- insert into chcdwork.dbo.poem_all_dx_simplify
-  select distinct a.*, 'P'
-    from chcdwork.dbo.poem_all_dx a 
-    left join chcdwork.dbo.poem_all_dx_simplify b 
-    on a.client_nbr = b.client_nbr
-   and a.clm_from_date  between b.clm_from_date and b.clm_to_date 
- where b.client_nbr is null 
-   and a.bill_type is null;
+ -- Insert professional claims that do not overlap with existing facility claims
+insert into chcdwork.dbo.poem_all_dx_simplify
+select distinct a.*, 'P' as fac_prof
+from chcdwork.dbo.poem_all_dx a
+left join chcdwork.dbo.poem_all_dx_simplify b 
+on a.client_nbr = b.client_nbr
+   and (
+        (a.clm_from_date <= b.clm_to_date and a.clm_to_date >= b.clm_from_date)
+       )
+where b.client_nbr is null 
+  and a.bill_type is null;
   
- -- insert rest of records but exclude if there is already a record for those days
- -- results in less records overall , easier to manipulate later 
-/*  insert into chcdwork.dbo.poem_all_dx_simplify
-  select distinct a.*
-    from chcdwork.dbo.poem_all_dx a 
-    left join chcdwork.dbo.poem_all_dx_simplify b 
-    on a.client_nbr = b.client_nbr
-   and a.clm_to_date between b.admit_date and b.discharge_date 
- where b.client_nbr is null;*/
+
+ /* --------------------------------------
+  * Quarantine contradiction records 
+  * Get rid of records that contradict eachother (different outcome same claim date)
+  */ -------------------------------------
+  
+ --- put into a quarantine table
+ drop table if exists chcdwork.dbo.poem_all_dx_simplify_contradictions;
+ 
+select *
+ into chcdwork.dbo.poem_all_dx_simplify_contradictions
+ from chcdwork.dbo.poem_all_dx_simplify a
+where exists (
+    select 1
+    from chcdwork.dbo.poem_all_dx_simplify b
+    where a.client_nbr = b.client_nbr
+    and (a.clm_to_date = b.clm_to_date or a.clm_from_date = b.clm_from_date)
+    and a.outcome_type <> b.outcome_type 
+);
+
+
+--- delete from main records 
+delete a
+from chcdwork.dbo.poem_all_dx_simplify a
+where exists (
+    select 1
+    from chcdwork.dbo.poem_all_dx_simplify b
+    where a.client_nbr = b.client_nbr
+    and (a.clm_to_date = b.clm_to_date or a.clm_from_date = b.clm_from_date)
+    and a.outcome_type <> b.outcome_type 
+);
 
 
 
@@ -201,19 +195,6 @@ FROM
 ORDER BY
     client_nbr, episode_id, clm_from_date;
 
---  get outcome types
-/*drop table if exists CHCDWORK.dbo.poem_all_dx_episodes_outcomes; 
-
-with distinct_outcomes as (
-select distinct client_nbr, episode_id, 
-       outcome_type 
-  from CHCDWORK.dbo.poem_all_dx_episodes
-  )
-  select client_nbr, episode_id, 
-       string_agg(outcome_type,'/') as outcome_type
-  into CHCDWORK.dbo.poem_all_dx_episodes_outcomes
-  from distinct_outcomes
- group by client_nbr, episode_id;*/
 
 -- aggregate beginning and ending dates 
 drop table if exists CHCDWORK.dbo.poem_all_dx_episodes_start_end;
@@ -231,6 +212,7 @@ select a.client_nbr, a.episode_id,
  group by a.client_nbr, a.episode_id;
    
 select * from CHCDWORK.dbo.poem_all_dx_episodes_start_end;
+
 /* ------------------------
  * Get info on "streaks"
  * Some people may have many months of claims in a row
@@ -292,7 +274,7 @@ select p.*,
      from chcdwork.dbo.poem_all_dx_streaks where streak_length  >= 6;
     
 -----------------------------------------------------------------------------------------------
---- Quarantine Bundled Claims
+--- Quarantine Streak Claims
 --- After inspecting these claims individually, it looks like most of them are single prenancies 
 --- They would be falsely flagged as multiple pregnancies, therefore setting aside for now
 ----------------------------------------------------------------------------------------------
@@ -378,7 +360,6 @@ END;
 ----------------------------------------------
 -- Exclude on Age
 ----------------------------------------------
-
 
 -- First get age
 drop table if exists chcdwork.dbo.poem_temp_bday;
@@ -470,7 +451,8 @@ select distinct a.* , b.dob,
        year(start_date) as year,
        ROW_NUMBER() over (PARTITION by a.client_nbr order by start_date ) as ep_num,
        a.client_nbr + '-' + cast(ROW_NUMBER() over (PARTITION by a.client_nbr order by start_date ) as varchar) as ep_id,
-       DATEDIFF(day, start_date, end_date)  as los
+       DATEDIFF(day, start_date, end_date)  + 1 as los ,
+       case when c.client_nbr is null then 0 else 1 end as enrolled_birth
   into chcdwork.dbo.poem_episodes_enrollment
   from chcdwork.dbo.poem_episodes_build a 
   inner join chcdwork.dbo.poem_dob b
@@ -483,7 +465,9 @@ select distinct a.* , b.dob,
   and c.elig_year = zip.year
   ;
  
-
+  
+  
+  select count(*) from chcdwork.dbo.poem_episodes_enrollment ;
    
 --- check episode code 
 -- should be equal
@@ -492,29 +476,92 @@ select count( distinct trim(client_nbr) +  cast(episode_id as varchar))
   union all
   select count(*) from chcdwork.dbo.poem_episodes_enrollment;
  
- --- check those with multiples
- with mult_ep as(
-  select client_nbr
-   from chcdwork.dbo.poem_episodes_enrollment
-  group by client_nbr
-    having count(*) > 4
-   )
-  select * 
-    from chcdwork.dbo.poem_episodes_enrollment a 
-    join mult_ep b 
-      on a.client_nbr = b.client_nbr 
-   order by a.client_nbr, episode_id;
+
+/*
+ * Get Midpoints
+ */
+
+drop table if exists chcdwork.dbo.poem_episodes_anchordates; 
  
+SELECT client_nbr,
+    ep_num,
+    start_date,
+    end_date,
+    -- Calculate the total number of days including both start and end dates
+    total_days = DATEDIFF(day, start_date, end_date) + 1,
+    -- Determine the tie breaker based on a pseudo-random but reproducible hash of client_nbr
+    tie_breaker = CASE 
+                    WHEN (DATEDIFF(day, start_date, end_date) + 1) % 2 = 0 
+                    THEN ABS(CHECKSUM(client_nbr)) % 2 
+                    ELSE 0 
+                  END,
+    -- Calculate the midpoint offset from the start_date
+    midpoint_offset = FLOOR(DATEDIFF(day, start_date, end_date) / 2.0)
+                      + CASE 
+                          WHEN (DATEDIFF(day, start_date, end_date) + 1) % 2 = 0 
+                          THEN ABS(CHECKSUM(client_nbr)) % 2 
+                          ELSE 0 
+                        END,
+    midpoint_date = DATEADD(
+        day,
+        FLOOR(DATEDIFF(day, start_date, end_date) / 2.0)
+        + CASE 
+            WHEN (DATEDIFF(day, start_date, end_date) + 1) % 2 = 0 
+            THEN ABS(CHECKSUM(client_nbr)) % 2 
+            ELSE 0 
+          END,
+        start_date)
+into chcdwork.dbo.poem_episodes_anchordates
+FROM chcdwork.dbo.poem_episodes_enrollment ;
 
-  select los, 
-         count(*) 
-    from chcdwork.dbo.poem_episodes_enrollment 
-   group by los 
-   order by los;
-   
-   
-  group by los
-  order by los
-;
+select * from chcdwork.dbo.poem_episodes_anchordates;
+/*
+ * Make final cohort 
+ */
 
-select * from chcdwork.dbo.poem_episodes_enrollment where los > 50;
+
+drop table if exists chcdwork.dbo.poem_cohort;
+
+select a.* , b.midpoint_date as anchor_date, 
+       year(b.midpoint_date ) as anchor_year
+  into chcdwork.dbo.poem_cohort
+  from chcdwork.dbo.poem_episodes_enrollment a 
+  join chcdwork.dbo.poem_episodes_anchordates b 
+  on a.client_nbr = b.client_nbr
+  and a.ep_num = b.ep_num ; 
+ 
+ --- 
+ select count(*)
+   from chcdwork.dbo.poem_cohort
+ ;
+ 
+ --986069
+ 
+ select *
+   from chcdwork.dbo.poem_cohort ;
+
+  
+  
+  
+/*  select a.*, b.out_enroll_90 , c.out_outpatient_contact , d.out_postpartum 
+   from chcdwork.dbo.poem_cohort a 
+   left join CHCDWORK.dbo.poem_outcomes_enrollment b 
+     on a.client_nbr = b.client_nbr
+    and a.ep_num = b.ep_num
+   left join CHCDWORK.dbo.poem_outcomes_outpatient_contact c
+     on a.client_nbr = c.client_nbr
+    and a.ep_num = c.ep_num
+   left join CHCDWORK.dbo.poem_outcomes_out_postpartum d
+     on a.client_nbr = d.client_nbr
+    and a.ep_num = d.ep_num ;
+   */
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  

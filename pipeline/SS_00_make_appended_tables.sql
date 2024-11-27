@@ -271,3 +271,5 @@ select derv_enc, TDOS_CSL, PROC_CD  from MEDICAID.dbo.ENC_DET_23
 where proc_cd <> ''
 ;
 
+
+

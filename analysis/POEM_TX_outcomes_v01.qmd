@@ -1,0 +1,186 @@
+---
+title: "POEM TX Cohort and Outcomes"
+date: today
+format: 
+  docx:
+    df-print: paged
+    page-layout: full
+    fig-width: 12
+    fig-height: 8
+    out-width: 100%
+  html:
+    fig-width: 12
+    fig-height: 8
+editor: visual
+execute: 
+  echo: false
+  warning: false
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup}
+#| echo: false
+#| warning: false
+#| 
+
+# Load packages 
+pacman::p_load(RPostgres, DBI, keyring, janitor, tidyverse, readxl,
+               gtsummary, ggplot2, labelled, clipr, viridis, ggrepel, scales,                     ggthemes, flextable, DiagrammeR,
+               odbc, openxlsx, beepr, tictoc, here)
+
+#### Setup File Paths ####
+# Get the location of this current .R file 
+current_dir <- here::here()
+
+#### Database Connection 
+spc <- dbConnect(odbc::odbc(),
+	 dsn = "SPC",
+	 bigint = "integer")
+
+options(scipen = 999)
+
+```
+
+```{r flex-table-func}
+FitFlextableToPage <- function(ft, pgwidth = 6){
+
+  ft_out <- ft %>% autofit()
+
+  ft_out <- width(ft_out, width = dim(ft_out)$widths*pgwidth /(flextable_dim(ft_out)$widths))
+  return(ft_out)
+}
+
+```
+
+```{r get-outcomes}
+
+all.df <- dbGetQuery(spc, " 
+  select a.client_nbr , a.episode_id ,a.race_cd, a.me_code, a.anchor_year , 
+        a.outcome_type,
+        a.age , a.state , a.enrolled_birth , a.los,
+        b.out_enroll_90 , c.out_prev_em , d.out_postpartum 
+   from chcdwork.dbo.poem_cohort a 
+   join CHCDWORK.dbo.poem_outcomes_enrollment b 
+   on a.client_nbr = b.client_nbr 
+   and a.ep_num = b.ep_num 
+   join CHCDWORK.dbo.poem_outcomes_prev_em c
+   on a.client_nbr = c.client_nbr 
+   and a.ep_num = c.ep_num 
+   join CHCDWORK.dbo.poem_outcomes_out_postpartum d
+   on a.client_nbr = d.client_nbr 
+   and a.ep_num = d.ep_num 
+ ;")
+
+
+```
+
+```{r clean-data}
+# Grab Data 
+
+episodes <- 
+  all.df %>%
+  mutate(
+    hispanic = case_when(
+      race_cd == 3 ~ 1,
+      TRUE ~ 0
+    )
+  ) %>% mutate(
+    race_desc = case_when(
+      race_cd == 1 ~ "White, non-Hispanic",
+      race_cd == 2 ~ "Black, non-Hispanic",
+      race_cd == 3 ~ "Hispanic",
+      race_cd == 4 ~ "American Indian or Alaskan",
+      race_cd == 5 ~ "Asian, Pacific Islander",
+      race_cd == 6 ~ "Unknown/Other",
+      TRUE ~  "Unknown/Other"
+    ),
+    me_desc = case_when(
+      me_code == "B" ~ "Pregnancy",
+      me_code == "C" ~ "Emergency",
+      me_code == "D" ~ "Other",
+      me_code == "F" ~ "Other",
+      me_code == "I" ~ "Institutional regular (CATS 1 3 or 4) (BP16 or 17)",
+      me_code == "N" ~ "FFCHE (Former Foster Child in Higher Education)",
+      me_code == "P" ~ "Three months prior",
+      me_code == "Q" ~ "QMD coverage (Medicare only)",
+      me_code == "R" ~ "Regular",
+      me_code == "T" ~ "1929(b) Base plan 20 MAO client",
+      me_code == "W" ~ "Healthy Texas Women",
+      TRUE ~ "Unknown (or Not Enrolled)"
+    ),
+    age_group = case_when(
+    age <= 18 ~ "0-18",
+    age >= 19 & age <= 24 ~ "19-24",
+    age >= 25 & age <= 34 ~ "25-34",
+    age >= 35 & age <= 44 ~ "35-44",
+    age >= 45 & age <= 55 ~ "45-55",
+    TRUE ~ NA_character_
+  ),
+     state_tx = case_when(
+      state == "TX" ~ "TX",
+      state != "TX" ~ "Non-TX",
+      TRUE ~ "Unknown"
+    )
+  ) %>%
+  mutate(los_less_60 = case_when(
+    los <= 60 ~ 1,
+    TRUE ~ 0
+  ))
+
+var_label(episodes) <- list(
+    anchor_year = "Year",
+    age = "Age",
+    race_desc = "Race/Ethnicity",
+    age_group = "Age Group",
+    me_desc = "Enrollment Category (Month of birth episode)",
+    state_tx = "State (Month of birth episode)",
+    outcome_type = "Birth Outcome",
+    los = "Length of Stay",
+    hispanic = "Hispanic",
+    los_less_60 = "LOS <= 60 days"
+  )
+
+
+```
+
+# Cohort
+
+```{r}
+cohort <- 
+episodes %>% 
+  filter(age >= 19 & age <= 55) %>%
+  filter(enrolled_birth == 1) %>%
+  filter(state_tx == 'TX') %>% 
+  filter(los <= 60)
+  
+```
+
+```{r}
+cohort %>% 
+  select(outcome_type, anchor_year, race_desc, age_group, hispanic) %>%
+  tbl_summary()  %>% as_flex_table() %>% 
+  theme_box() %>%
+  padding(padding = 1.5) %>%
+  autofit() 
+```
+
+- Filtered for age, enrollment month of birth, TX location, and LOS <= 60 days
+
+{{< pagebreak >}}
+
+# Outcomes
+
+```{r}
+cohort %>% 
+  select(anchor_year, out_enroll_90, out_prev_em, out_postpartum) %>%
+  tbl_summary(
+    by = anchor_year,
+    statistic = all_categorical() ~ "{n}\n({p}%)"  # Display N and % with a line break
+  ) %>%  
+  as_flex_table() %>%
+  theme_box() %>%
+  padding(padding = 1.5) %>%
+  FitFlextableToPage()
+
+```

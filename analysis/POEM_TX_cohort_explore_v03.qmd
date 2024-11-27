@@ -1,0 +1,308 @@
+---
+title: "POEM TX Cohort Pull"
+date: today
+format: 
+  docx:
+    df-print: paged
+    page-layout: full
+    fig-width: 12
+    fig-height: 8
+    out-width: 100%
+  html:
+    fig-width: 12
+    fig-height: 8
+editor: visual
+execute: 
+  echo: false
+  warning: false
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup}
+#| echo: false
+#| warning: false
+#| 
+
+# Load packages 
+pacman::p_load(RPostgres, DBI, keyring, janitor, tidyverse, readxl,
+               gtsummary, ggplot2, labelled, clipr, viridis, ggrepel, scales,                     ggthemes, flextable, DiagrammeR,
+               odbc, openxlsx, beepr, tictoc, here)
+
+#### Setup File Paths ####
+# Get the location of this current .R file 
+current_dir <- here::here()
+
+#### Database Connection 
+spc <- dbConnect(odbc::odbc(),
+	 dsn = "SPC",
+	 bigint = "integer")
+
+options(scipen = 999)
+
+```
+
+```{r flex-table-func}
+FitFlextableToPage <- function(ft, pgwidth = 6){
+
+  ft_out <- ft %>% autofit()
+
+  ft_out <- width(ft_out, width = dim(ft_out)$widths*pgwidth /(flextable_dim(ft_out)$widths))
+  return(ft_out)
+}
+
+```
+
+
+# Record Counts (pre-Episode Algorithm Logic)
+
+Using the steps laid out in the `Episode Algorithm` tab of the `Data Harmonization Tracker`, the count of records (FY19-23 files, filtering starting 2019-01-01):
+
+```{r get-record-counts}
+record.counts <- dbGetQuery(spc, "select 1 as step, 
+       'All DX LB/SB records' as description, 
+       count( distinct client_nbr  +  cast(clm_to_date  as varchar) +  cast(outcome_type  as varchar)) record_count
+  from chcdwork.dbo.poem_all_dx
+union all
+	  select 2,
+	        'Deduplicating (Taking priority for facility)', 
+	       count( distinct client_nbr  +  cast(clm_to_date  as varchar) +  cast(outcome_type  as varchar))
+	  from (
+		select * from chcdwork.dbo.poem_all_dx_simplify
+		union all
+		select * from chcdwork.dbo.poem_all_dx_simplify_contradictions
+	  ) a 
+union all
+	  select 3,
+	        'After removing contradictory records', 
+	       count( distinct client_nbr  +  cast(clm_to_date  as varchar) +  cast(outcome_type  as varchar))
+	  from chcdwork.dbo.poem_all_dx_simplify
+union all
+       select 4,
+	        'After rolling up overlapping records into episodes',
+	        count( distinct client_nbr  +  cast(episode_id  as varchar)) 
+	   from (
+	 select * from CHCDWORK.dbo.poem_all_dx_episodes_quarantine_streaks
+	 union all 
+	 select * from CHCDWORK.dbo.poem_all_dx_episodes_start_end
+	) a	
+union all
+       select 5,
+	        'After removing repeating episodes',
+	        count( distinct client_nbr  +  cast(episode_id  as varchar)) 
+	   from CHCDWORK.dbo.poem_all_dx_episodes_start_end
+union all
+       select 6,
+	        'After running algorithm',
+	        count( distinct client_nbr  +  cast(episode_id  as varchar)) record_count
+  from chcdwork.dbo.poem_episodes_build;")
+
+```
+
+```{r}
+record.counts %>% flextable() %>% theme_box() %>% FitFlextableToPage()
+```
+
+-   A record refers to a unique combination of `client_nbr + clm_to_date + outcome_type (LB/SB)` or combination of of `client_nbr + episode_id` once they are rolled up.
+-   The de-duplicating step is data cleaning: first I take facility records, and then only insert professional records if they do not currently overlap with the facility claims pulled first. This cleans up some messy date math that was occurring.
+-   Contradictory record is a record such that the same person has a record that same day with a different outcome type (LB vs SB)
+-   Overlapping records were rolled up according to dates alone. There was no special consideration of discharge codes or special logic for that. So, after cleaning up and sorting the dates, the if the next `start_date` \> previous `end_date`, a new episode is marked. They are then rolled up to collapse the overlaps. This *may catch some transfers* but does not consider them separately.
+-   Repeating episodes had monthly codes showing a live birth at least once a month for more than six months in a row. These were investigated and removed due to not being able to tell which birth would be considered the correct one.
+
+{{< pagebreak >}}
+
+# Inclusion Exclusion
+
+```{r inclusion-exclusion}
+
+inclusion.exclusion <- dbGetQuery(spc, "select 1 as step, 
+       'All episodes' as description, 
+       count( distinct client_nbr  +  cast(episode_id  as varchar)) record_count
+  from chcdwork.dbo.poem_episodes_build
+union all 
+select 2 as step, 
+       'Exists in enrollment at any point' as description, 
+       count( distinct client_nbr  +  cast(episode_id  as varchar)) record_count
+  from chcdwork.dbo.poem_episodes_enrollment
+ union all 
+select 3 as step, 
+       'Age 19-55' as description, 
+       count( distinct client_nbr  +  cast(episode_id  as varchar)) record_count
+  from chcdwork.dbo.poem_episodes_enrollment
+  where age between 19 and 55
+     union all 
+select 4 as step, 
+       'Enrolled month of birth' as description, 
+       count( distinct client_nbr  +  cast(episode_id  as varchar)) record_count
+  from chcdwork.dbo.poem_episodes_enrollment
+  where age between 19 and 55 and enrolled_birth = 1
+   union all 
+select 5 as step, 
+       'Residence' as description, 
+       count( distinct client_nbr  +  cast(episode_id  as varchar)) record_count
+  from chcdwork.dbo.poem_episodes_enrollment
+  where age between 19 and 55 and enrolled_birth = 1 
+    and state = 'TX'
+     union all 
+select 6 as step, 
+       'LOS <= 60' as description, 
+       count( distinct client_nbr  +  cast(episode_id  as varchar)) record_count
+  from chcdwork.dbo.poem_cohort
+  where age between 19 and 55 and enrolled_birth = 1 
+    and state = 'TX'
+    and los <= 60
+    ;")
+
+inclusion.exclusion <- 
+inclusion.exclusion %>%
+  mutate(record_diff = lag(record_count, 1) - record_count)
+
+```
+
+```{r}
+inclusion.exclusion %>% flextable() %>% theme_box() %>% FitFlextableToPage()
+```
+
+{{< pagebreak >}}
+
+```{r clean-data}
+# Grab Data 
+episodes <- dbGetQuery(spc, "select * from chcdwork.dbo.poem_cohort ;")
+
+episodes <- 
+  episodes %>%
+  mutate(
+    hispanic = case_when(
+      race_cd == 3 ~ 1,
+      TRUE ~ 0
+    )
+  ) %>% mutate(
+    race_desc = case_when(
+      race_cd == 1 ~ "White, non-Hispanic",
+      race_cd == 2 ~ "Black, non-Hispanic",
+      race_cd == 3 ~ "Hispanic",
+      race_cd == 4 ~ "American Indian or Alaskan",
+      race_cd == 5 ~ "Asian, Pacific Islander",
+      race_cd == 6 ~ "Unknown/Other",
+      TRUE ~  "Unknown/Other"
+    ),
+    me_desc = case_when(
+      me_code == "B" ~ "Pregnancy",
+      me_code == "C" ~ "Emergency",
+      me_code == "D" ~ "Other",
+      me_code == "F" ~ "Other",
+      me_code == "I" ~ "Institutional regular (CATS 1 3 or 4) (BP16 or 17)",
+      me_code == "N" ~ "FFCHE (Former Foster Child in Higher Education)",
+      me_code == "P" ~ "Three months prior",
+      me_code == "Q" ~ "QMD coverage (Medicare only)",
+      me_code == "R" ~ "Regular",
+      me_code == "T" ~ "1929(b) Base plan 20 MAO client",
+      me_code == "W" ~ "Healthy Texas Women",
+      TRUE ~ "Unknown (or Not Enrolled)"
+    ),
+    age_group = case_when(
+    age <= 14 ~ "0-14",
+    age >= 15 & age <= 24 ~ "15-24",
+    age >= 25 & age <= 34 ~ "25-34",
+    age >= 35 & age <= 44 ~ "35-44",
+    age >= 45 & age <= 54 ~ "45-54",
+    age >= 55 & age <= 64 ~ "55-64",
+    age >= 65 & age <= 74 ~ "65-74",
+    age >= 75 ~ "75+",
+    TRUE ~ NA_character_
+  ),
+     state_tx = case_when(
+      state == "TX" ~ "TX",
+      state != "TX" ~ "Non-TX",
+      TRUE ~ "Unknown"
+    )
+  ) %>%
+  mutate(los_less_60 = case_when(
+    los <= 60 ~ 1,
+    TRUE ~ 0
+  ))
+
+var_label(episodes) <- list(
+    year = "Year",
+    age = "Age",
+    race_desc = "Race/Ethnicity",
+    age_group = "Age Group",
+    enrollment_table = "Enrollment Table (Month of birth episode)",
+    me_desc = "Enrollment Category (Month of birth episode)",
+    state_tx = "State (Month of birth episode)",
+    outcome_type = "Birth Outcome",
+    pat_stat = "Discharge Status",
+    los = "Length of Stay",
+    fac_prof = "Facility/Professional Claims",
+    hispanic = "Hispanic",
+    los_less_60 = "LOS <= 60 days"
+  )
+
+
+```
+
+{{< pagebreak >}}
+
+## Characteristics after filtering 
+
+```{r}
+cohort <- 
+episodes %>% 
+  filter(age >= 19 & age <= 55) %>%
+  filter(enrolled_birth == 1) %>%
+  filter(state_tx == 'TX') %>% 
+  filter(los <= 60)
+  
+```
+
+```{r}
+cohort %>% 
+  select(outcome_type, year, race_desc, age_group, hispanic, me_desc) %>%
+  tbl_summary()  %>% as_flex_table() %>% 
+  theme_box() %>%
+  padding(padding = 1.5) %>%
+  autofit() 
+```
+
+-   Age is based on the most common birth date when a person had multiple DOB
+-   Filtering to TX is based on enrollment the month of the episode
+-   Race is based on enrollment the month of the episode, so someone might have race recorded elsewhere else if enrollment said "Unknown" that month.
+
+{{< pagebreak >}}
+
+# Race Ethnicity Breakdown
+
+```{r}
+tabyl(dat = cohort, var2 = hispanic, var1 = race_desc, format="long") %>%
+  adorn_totals("col") %>%
+  adorn_totals("row") %>% 
+  flextable() %>% 
+  theme_box() %>%
+  padding(padding = 1.5) %>%
+  autofit() 
+```
+
+
+```{r}
+# outcomes.quick <- dbGetQuery(spc, " select a.*, b.out_enroll_90 , c.out_outpatient_contact , d.out_postpartum 
+#    from chcdwork.dbo.poem_cohort a 
+#    left join CHCDWORK.dbo.poem_outcomes_enrollment b 
+#      on a.client_nbr = b.client_nbr
+#     and a.ep_num = b.ep_num
+#    left join CHCDWORK.dbo.poem_outcomes_outpatient_contact c
+#      on a.client_nbr = c.client_nbr
+#     and a.ep_num = c.ep_num
+#    left join CHCDWORK.dbo.poem_outcomes_out_postpartum d
+#      on a.client_nbr = d.client_nbr
+#     and a.ep_num = d.ep_num;
+#     ;")
+# 
+# outcomes.quick %>%
+#   group_by(year) %>%
+#   summarise(enrollment_90 = mean(out_enroll_90, na.rm=TRUE),
+#             out_outpatient_contact = mean(out_outpatient_contact, na.rm=TRUE),
+#             out_postpartum = mean(out_postpartum, na.rm=TRUE))
+# 
+
+```
+
