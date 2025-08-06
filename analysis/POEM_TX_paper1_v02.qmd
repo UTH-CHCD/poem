@@ -1,0 +1,532 @@
+---
+title: "POEM TX Paper 1"
+date: today
+format: 
+  docx:
+    df-print: paged
+    page-layout: full
+    fig-width: 12
+    fig-height: 8
+    out-width: 100%
+  html:
+    fig-width: 12
+    fig-height: 8
+editor: visual
+execute: 
+  echo: false
+  warning: false
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup}
+#| echo: false
+#| warning: false
+#| 
+
+# Load packages 
+pacman::p_load(RPostgres, DBI, keyring, janitor, tidyverse, readxl,
+               gtsummary, ggplot2, labelled, clipr, viridis, ggrepel, scales,                     ggthemes, flextable, DiagrammeR,
+               odbc, openxlsx, beepr, tictoc, here)
+
+#### Setup File Paths ####
+# Get the location of this current .R file 
+current_dir <- here::here()
+
+#### Database Connection 
+spc <- dbConnect(odbc::odbc(),
+	 dsn = "SPC",
+	 bigint = "integer")
+
+options(scipen = 999)
+
+
+# Set Themes
+
+my_theme <- function() {
+  theme_minimal(base_size = 10) +
+    theme(
+      text = element_text(family = "sans", size=14),
+      axis.text.y = element_text(size = 12, face="plain", margin = margin(r = 10, unit = "pt")),
+      axis.title.y = element_text(size = 13, face = "bold", margin = margin(r = 20, unit = "pt")) ,
+      axis.title.x = element_text(size = 13, face = "bold", margin = margin(t = 20, unit = "pt")) , 
+      plot.caption = element_text(size = 12, face = "italic", margin = margin(t = 20, r=20, b = 5, l=20, unit = "pt"))
+    )
+}
+
+set_flextable_defaults(padding=2.5)
+
+theme_set(my_theme())
+
+
+```
+
+```{r flex-table-func}
+FitFlextableToPage <- function(ft, pgwidth = 6){
+
+  ft_out <- ft %>% autofit()
+
+  ft_out <- width(ft_out, width = dim(ft_out)$widths*pgwidth /(flextable_dim(ft_out)$widths))
+  return(ft_out)
+}
+
+```
+
+```{r get-outcomes}
+
+all.df <- dbGetQuery(spc, " 
+  select * from chcdwork.dbo.poem_cohort_analysis1 
+ ;")
+
+
+```
+
+```{r clean-data}
+# Grab Data 
+
+episodes <- 
+  all.df %>%
+  mutate(
+    hispanic = case_when(
+      race_cd == 3 ~ 1,
+      TRUE ~ 0
+    )
+  ) %>% mutate(
+    race_desc = case_when(
+      race_cd == 1 ~ "White, non-Hispanic",
+      race_cd == 2 ~ "Black, non-Hispanic",
+      race_cd == 3 ~ "Hispanic",
+      race_cd == 4 ~ "American Indian or Alaskan",
+      race_cd == 5 ~ "Asian, Pacific Islander",
+      race_cd == 6 ~ "Unknown/Other",
+      TRUE ~  "Unknown/Other"
+    ),
+    me_desc = case_when(
+      me_code == "B" ~ "Pregnancy",
+      me_code == "C" ~ "Emergency",
+      me_code == "D" ~ "Other",
+      me_code == "F" ~ "Other",
+      me_code == "I" ~ "Institutional regular (CATS 1 3 or 4) (BP16 or 17)",
+      me_code == "N" ~ "FFCHE (Former Foster Child in Higher Education)",
+      me_code == "P" ~ "Three months prior",
+      me_code == "Q" ~ "QMD coverage (Medicare only)",
+      me_code == "R" ~ "Regular",
+      me_code == "T" ~ "1929(b) Base plan 20 MAO client",
+      me_code == "W" ~ "Healthy Texas Women",
+      TRUE ~ "Unknown"
+    ),
+    age_group = case_when(
+    age <= 18 ~ "0-18",
+    age >= 19 & age <= 24 ~ "19-24",
+    age >= 25 & age <= 34 ~ "25-34",
+    age >= 35 & age <= 44 ~ "35-44",
+    age >= 45 & age <= 55 ~ "45-55",
+    TRUE ~ NA_character_
+  ),
+     state_tx = case_when(
+      state == "TX" ~ "TX",
+      state != "TX" ~ "Non-TX",
+      TRUE ~ "Unknown"
+    )
+  ) %>%
+  mutate(los_less_60 = case_when(
+    los <= 60 ~ 1,
+    TRUE ~ 0
+  )) %>%
+  mutate(monthly_anchor_date = as.Date(format(anchor_date, "%Y-%m-01")))
+
+var_label(episodes) <- list(
+    anchor_year = "Year",
+    age = "Age",
+    race_desc = "Race/Ethnicity",
+    age_group = "Age Group",
+    me_desc = "Enrollment Category (Month of birth episode)",
+    state_tx = "State (Month of birth episode)",
+    outcome_type = "Birth Outcome",
+    los = "Length of Stay",
+    hispanic = "Hispanic",
+    los_less_60 = "LOS <= 60 days",
+    diab_sample = "Diabetes Sample",
+    htn_sample = "HTN Sample",
+    monthly_anchor_date = "Anchor Month"
+  )
+
+
+```
+
+# Cohort
+
+```{r}
+cohort <- 
+episodes %>% 
+  filter(age >= 19 & age <= 55) %>%
+  filter(enrolled_birth == 1) %>%
+  filter(state_tx == 'TX') %>% 
+  filter(los <= 60)
+  
+```
+
+```{r}
+cohort %>% 
+  select(outcome_type, anchor_year, race_desc, age_group, hispanic, htn_sample, diab_sample, me_desc) %>%
+  tbl_summary()  %>% as_flex_table() %>% 
+  theme_box() %>%
+  padding(padding = 1.5) %>%
+  autofit() 
+```
+
+-   Filtered for age, enrollment month of birth, TX location, and LOS \<= 60 days
+
+{{< pagebreak >}}
+
+# Cohort over time
+
+## Total N
+
+```{r}
+cohort %>%
+  group_by(monthly_anchor_date) %>%
+  summarise(total_n = n()) %>%
+  ggplot(aes(x=monthly_anchor_date, y=total_n)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = comma) 
+```
+
+## HTN subgroup percentage
+
+```{r}
+cohort %>%
+  group_by(monthly_anchor_date) %>%
+  summarise(htn_sample = mean(htn_sample)) %>%
+  ggplot(aes(x=monthly_anchor_date, y=htn_sample)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(0,.5)) 
+
+```
+
+## Diabetes subgroup percentage
+
+```{r}
+cohort %>%
+  group_by(monthly_anchor_date) %>%
+  summarise(diab_sample = mean(diab_sample)) %>%
+  ggplot(aes(x=monthly_anchor_date, y=diab_sample)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits=c(0,.5)) 
+
+```
+
+### What percent of those diabetes DX had a DX during their episode window?
+
+```{r}
+
+diabetes.qa <- dbGetQuery(spc, " 
+  select * from chcdwork.dbo.poem_cohort_diab_qa 
+ ;")
+
+diabetes.qa %>% filter(client_nbr %in% cohort$client_nbr) %>% 
+  mutate(monthly_anchor_date = as.Date(format(anchor_date, "%Y-%m-01"))) %>%
+  group_by(monthly_anchor_date) %>%
+  summarise(pct_dx_during_episode = mean(during_episode)) %>%
+   ggplot(aes(x=monthly_anchor_date, y=pct_dx_during_episode)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+
+remove(diabetes.qa)
+invisible(gc())
+
+```
+
+### What percent of those HTN DX had a DX during their episode window?
+
+```{r}
+
+htn.qa <- dbGetQuery(spc, " 
+  select * from chcdwork.dbo.poem_cohort_htn_qa 
+ ;")
+
+htn.qa %>% filter(client_nbr %in% cohort$client_nbr) %>% 
+  mutate(monthly_anchor_date = as.Date(format(anchor_date, "%Y-%m-01"))) %>%
+  group_by(monthly_anchor_date) %>%
+  summarise(pct_dx_during_episode = mean(during_episode)) %>%
+   ggplot(aes(x=monthly_anchor_date, y=pct_dx_during_episode)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+
+remove(htn.qa)
+invisible(gc())
+
+
+```
+
+{{< pagebreak >}}
+
+# Outcomes
+
+## Overall
+
+### Postpartum
+
+```{r}
+cohort.pp.pct.all <- 
+cohort %>%
+  group_by(monthly_anchor_date) %>%
+  summarise(out_postpartum_6 = mean(out_postpartum_6),
+            out_postpartum_12 = mean(out_postpartum_12)) %>%
+  mutate(category = "Overall")
+
+
+cohort.pp.pct.all %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_postpartum_6)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+
+cohort.pp.pct.all %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_postpartum_12)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+```
+
+## HTN Subgroup
+
+```{r}
+htn.subgroup <- 
+  cohort %>% filter(htn_sample==1)
+```
+
+### Hypertension Medication
+
+```{r}
+htn.subgroup %>%
+  group_by(monthly_anchor_date) %>%
+  summarise(out_htn_med_6 = mean(out_htn_med_6)) %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_htn_med_6)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+
+htn.subgroup %>%
+  group_by(monthly_anchor_date) %>%
+  summarise(out_htn_med_12 = mean(out_htn_med_12)) %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_htn_med_12)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+```
+
+
+### Postpartum Visits
+
+```{r}
+
+cohort.pp.pct.htn <- 
+htn.subgroup %>%
+  group_by(monthly_anchor_date) %>%
+  summarise(out_postpartum_6 = mean(out_postpartum_6),
+            out_postpartum_12 = mean(out_postpartum_12)) %>%
+  mutate(category = "HTN")
+
+cohort.pp.pct.htn %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_postpartum_6)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+
+cohort.pp.pct.htn %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_postpartum_12)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+```
+
+## Diabetes Subgroup
+
+### Diabetes Screening
+
+```{r}
+diab.subgroup <- 
+  cohort %>% filter(diab_sample==1)
+
+
+diab.subgroup %>%
+  group_by(monthly_anchor_date) %>%
+  summarise(out_diab_screen_6 = mean(out_diab_screen_6)) %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_diab_screen_6)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+
+diab.subgroup %>%
+  group_by(monthly_anchor_date) %>%
+  summarise(out_diab_screen_12 = mean(out_diab_screen_12)) %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_diab_screen_12)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+
+```
+
+### Diabetes Subgroup Testing
+
+```{r}
+diab.breakdown.raw <- dbGetQuery(spc, " 
+  select * from chcdwork.dbo.poem_cohort_analysis_diab_detail;
+ ;")
+
+diab.breakdown <- 
+diab.breakdown.raw %>%
+  mutate(
+    hispanic = case_when(
+      race_cd == 3 ~ 1,
+      TRUE ~ 0
+    )
+  ) %>% mutate(
+    race_desc = case_when(
+      race_cd == 1 ~ "White, non-Hispanic",
+      race_cd == 2 ~ "Black, non-Hispanic",
+      race_cd == 3 ~ "Hispanic",
+      race_cd == 4 ~ "American Indian or Alaskan",
+      race_cd == 5 ~ "Asian, Pacific Islander",
+      race_cd == 6 ~ "Unknown/Other",
+      TRUE ~  "Unknown/Other"
+    ),
+    me_desc = case_when(
+      me_code == "B" ~ "Pregnancy",
+      me_code == "C" ~ "Emergency",
+      me_code == "D" ~ "Other",
+      me_code == "F" ~ "Other",
+      me_code == "I" ~ "Institutional regular (CATS 1 3 or 4) (BP16 or 17)",
+      me_code == "N" ~ "FFCHE (Former Foster Child in Higher Education)",
+      me_code == "P" ~ "Three months prior",
+      me_code == "Q" ~ "QMD coverage (Medicare only)",
+      me_code == "R" ~ "Regular",
+      me_code == "T" ~ "1929(b) Base plan 20 MAO client",
+      me_code == "W" ~ "Healthy Texas Women",
+      TRUE ~ "Unknown"
+    ),
+    age_group = case_when(
+    age <= 18 ~ "0-18",
+    age >= 19 & age <= 24 ~ "19-24",
+    age >= 25 & age <= 34 ~ "25-34",
+    age >= 35 & age <= 44 ~ "35-44",
+    age >= 45 & age <= 55 ~ "45-55",
+    TRUE ~ NA_character_
+  ),
+     state_tx = case_when(
+      state == "TX" ~ "TX",
+      state != "TX" ~ "Non-TX",
+      TRUE ~ "Unknown"
+    )
+  ) %>%
+  mutate(los_less_60 = case_when(
+    los <= 60 ~ 1,
+    TRUE ~ 0
+  )) %>%
+  mutate(monthly_anchor_date = as.Date(format(anchor_date, "%Y-%m-01"))) %>% 
+  filter(age >= 19 & age <= 55) %>%
+  filter(enrolled_birth == 1) %>%
+  filter(state_tx == 'TX') %>% 
+  filter(los <= 60) %>% 
+  filter(diab_sample==1)
+
+
+
+diab.breakdown %>%
+  group_by(monthly_anchor_date) %>%
+  mutate(total_n = n()) %>%  # Calculate overall n for each monthly_anchor_date
+  ungroup() %>%
+  group_by(monthly_anchor_date, test_type) %>%
+  filter(out_diab_screen_12 == 1) %>%
+  summarise(
+    n = n(),
+    proportion = n / unique(total_n)  # Calculate the proportion
+  ) %>%
+  ggplot(aes(x = monthly_anchor_date, y = proportion, color = test_type)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Proportion of Test Types (12-month Outcome)",
+    y = "Proportion",
+    x = "Monthly Anchor Date",
+    color = "Test Type"
+  )+ 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+
+# For the 6-month outcome
+diab.breakdown %>%
+  group_by(monthly_anchor_date) %>%
+  mutate(total_n = n()) %>%  # Calculate overall n for each monthly_anchor_date
+  ungroup() %>%
+  group_by(monthly_anchor_date, test_type) %>%
+  filter(out_diab_screen_6 == 1) %>%
+  summarise(
+    n = n(),
+    proportion = n / unique(total_n)  # Calculate the proportion
+  ) %>%
+  ggplot(aes(x = monthly_anchor_date, y = proportion, color = test_type)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Proportion of Test Types (6-month Outcome)",
+    y = "Proportion",
+    x = "Monthly Anchor Date",
+    color = "Test Type"
+  ) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+
+
+```
+
+### Postpartum Visits
+
+```{r}
+cohort.pp.pct.diab <- 
+diab.subgroup %>%
+  group_by(monthly_anchor_date) %>%
+  summarise(out_postpartum_6 = mean(out_postpartum_6),
+            out_postpartum_12 = mean(out_postpartum_12)) %>%
+  mutate(category = "DIAB")
+
+cohort.pp.pct.diab %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_postpartum_6)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+
+cohort.pp.pct.diab %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_postpartum_12)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+```
+
+## Cross Group Comparison
+
+```{r}
+pp.pct.bind <- rbind(cohort.pp.pct.all, cohort.pp.pct.diab, cohort.pp.pct.htn)
+
+pp.pct.bind %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_postpartum_6, color=category)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+
+pp.pct.bind %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_postpartum_12, color=category)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+```
+
+### Check live births only to see if higher
+
+```{r}
+lb.only.check <- 
+cohort %>%
+  filter(outcome_type=="LB") %>%
+  group_by(monthly_anchor_date) %>%
+  summarise(out_postpartum_6 = mean(out_postpartum_6),
+            out_postpartum_12 = mean(out_postpartum_12)) %>%
+  mutate(category = "Livebirths Only")
+
+
+check.bind <- rbind(cohort.pp.pct.all, lb.only.check)
+
+check.bind %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_postpartum_12, color=category)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(.5,1)) 
+
+check.bind %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_postpartum_6, color=category)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(.5,1)) 
+```

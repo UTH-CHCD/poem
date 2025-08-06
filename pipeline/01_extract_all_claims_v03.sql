@@ -534,6 +534,12 @@ select a.* , b.midpoint_date as anchor_date,
  select count(*)
    from chcdwork.dbo.poem_cohort
  ;
+
+ --- 
+ select year(anchor_date), count(*)
+   from chcdwork.dbo.poem_cohort
+   group by year(anchor_date)
+ ;
  
  --986069
  
@@ -555,13 +561,6 @@ select a.* , b.midpoint_date as anchor_date,
      on a.client_nbr = d.client_nbr
     and a.ep_num = d.ep_num ;
    */
-  
-  
-  
-  
-  
-  
-  
   
   
   

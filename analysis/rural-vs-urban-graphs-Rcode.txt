@@ -1,0 +1,110 @@
+# Filter out NA urban values first
+diab.subgroup <- diab.subgroup %>% filter(!is.na(urban))
+htn.subgroup <- htn.subgroup %>% filter(!is.na(urban))
+
+# Color palette
+urban_colors <- c("0" = "#1f78b4", "1" = "#33a02c")  # 0 = rural, 1 = urban
+urban_labels <- c("0" = "Rural", "1" = "Urban")
+
+# Diabetes screening
+diab.screening <- 
+  diab.subgroup %>%
+  group_by(anchor_date_twoweeks, urban) %>%
+  summarise(out_diab_screen_6 = mean(out_diab_screen_6), .groups = "drop") %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = out_diab_screen_6, color = factor(urban))) +
+  geom_line(linewidth = 1) +
+  geom_vline(
+    data = period_starts,
+    aes(xintercept = date),
+    linetype = "dashed",
+    linewidth = 0.75,
+    color = "grey50"
+  ) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  scale_color_manual(values = urban_colors, labels = urban_labels, name = "Location") +
+  labs(
+    title = "Diabetes Screening Rates (6 Months)",
+    x = "Date",
+    y = "% Episode with Screening"
+  ) +
+  theme_minimal()
+
+# Diabetes visit
+diab.visit <- 
+  diab.subgroup %>%
+  group_by(anchor_date_twoweeks, urban) %>%
+  summarise(out_postpartum_6 = mean(out_postpartum_6), .groups = "drop") %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = out_postpartum_6, color = factor(urban))) +
+  geom_line(linewidth = 1) +
+  geom_vline(
+    data = period_starts,
+    aes(xintercept = date),
+    linetype = "dashed",
+    linewidth = 0.75,
+    color = "grey50"
+  ) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  scale_color_manual(values = urban_colors, labels = urban_labels, name = "Location") +
+  labs(
+    title = "Postpartum Visit (Diabetes Subgroup, 6 Months)",
+    x = "Date",
+    y = "% Episodes with Visit"
+  ) +
+  theme_minimal()
+
+# Hypertension visit
+htn.visit <- 
+  htn.subgroup %>%
+  group_by(anchor_date_twoweeks, urban) %>%
+  summarise(out_postpartum_6 = mean(out_postpartum_6), .groups = "drop") %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = out_postpartum_6, color = factor(urban))) +
+  geom_line(linewidth = 1) +
+  geom_vline(
+    data = period_starts,
+    aes(xintercept = date),
+    linetype = "dashed",
+    linewidth = 0.75,
+    color = "grey50"
+  ) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  scale_color_manual(values = urban_colors, labels = urban_labels, name = "Location") +
+  labs(
+    title = "Postpartum Visit (Hypertension Subgroup, 6 Months)",
+    x = "Date",
+    y = "% Episodes with Visit"
+  ) +
+  theme_minimal()
+
+# Hypertension medication
+htn.med <- 
+  htn.subgroup %>%
+  group_by(anchor_date_twoweeks, urban) %>%
+  summarise(out_htn_med_6 = mean(out_htn_med_6), .groups = "drop") %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = out_htn_med_6, color = factor(urban))) +
+  geom_line(linewidth = 1) +
+  geom_vline(
+    data = period_starts,
+    aes(xintercept = date),
+    linetype = "dashed",
+    linewidth = 0.75,
+    color = "grey50"
+  ) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  scale_color_manual(values = urban_colors, labels = urban_labels, name = "Location") +
+  labs(
+    title = "Hypertension Medication Use (6 Months)",
+    x = "Date",
+    y = "% Episodes with Medication"
+  ) +
+  theme_minimal()
+
+# Combine into one panel
+combined_plot <- (
+  (diab.screening + diab.visit) /
+  (htn.visit + htn.med)
+) +
+  plot_layout(guides = "collect") & 
+  theme(legend.position = "bottom")
+
+# Display
+combined_plot

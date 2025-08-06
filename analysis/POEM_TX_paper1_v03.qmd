@@ -1,0 +1,806 @@
+---
+title: "POEM TX Paper 1"
+date: today
+format: 
+  docx:
+    df-print: paged
+    page-layout: full
+    fig-width: 12
+    fig-height: 8
+    out-width: 100%
+  html:
+    fig-width: 12
+    fig-height: 8
+editor: visual
+execute: 
+  echo: false
+  warning: false
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup}
+#| echo: false
+#| warning: false
+#| 
+
+# Load packages 
+pacman::p_load(RPostgres, DBI, keyring, janitor, tidyverse, readxl,
+               gtsummary, ggplot2, labelled, clipr, viridis, ggrepel, scales, ggthemes, flextable, DiagrammeR,
+               odbc, openxlsx, beepr, tictoc, here, sandwich, lmtest, lubridate)
+
+#### Setup File Paths ####
+# Get the location of this current .R file 
+current_dir <- here::here()
+
+#### Database Connection 
+spc <- dbConnect(odbc::odbc(),
+	 dsn = "SPC",
+	 bigint = "integer")
+
+options(scipen = 999)
+
+
+# Set Themes
+
+my_theme <- function() {
+  theme_minimal(base_size = 10) +
+    theme(
+      text = element_text(family = "sans", size=14),
+      axis.text.y = element_text(size = 12, face="plain", margin = margin(r = 10, unit = "pt")),
+      axis.title.y = element_text(size = 13, face = "bold", margin = margin(r = 20, unit = "pt")) ,
+      axis.title.x = element_text(size = 13, face = "bold", margin = margin(t = 20, unit = "pt")) , 
+      plot.caption = element_text(size = 12, face = "italic", margin = margin(t = 20, r=20, b = 5, l=20, unit = "pt"))
+    )
+}
+
+set_flextable_defaults(padding=2.5)
+
+theme_set(my_theme())
+
+FitFlextableToPage <- function(ft, pgwidth = 6){
+
+  ft_out <- ft %>% autofit()
+
+  ft_out <- width(ft_out, width = dim(ft_out)$widths*pgwidth /(flextable_dim(ft_out)$widths))
+  return(ft_out)
+}
+
+
+```
+
+```{r get-outcomes}
+
+all.df <- dbGetQuery(spc, " 
+  select * from chcdwork.dbo.poem_cohort_analysis1 
+ ;")
+
+
+```
+
+<!-- ```{r get-covariates} -->
+
+<!-- cov <- dbGetQuery(spc, "  -->
+
+<!--   select * from CHCDWORK.dbo.poem_cohort_cov_collapse;") -->
+
+<!-- cov.wide <-  -->
+
+<!-- cov %>% -->
+
+<!--   pivot_wider( -->
+
+<!--     data=., -->
+
+<!--     id_cols =  c(client_nbr, episode_id), -->
+
+<!--     names_from = variable_name, -->
+
+<!--     values_from = cov_yes -->
+
+<!--   ) -->
+
+<!-- quietly(remove(cov)) -->
+
+<!-- quietly(gc()) -->
+
+<!-- ``` -->
+
+```{r clean-data}
+# Grab Data 
+
+episodes <- 
+  all.df %>%
+  mutate(
+    hispanic = case_when(
+      race_cd == 3 ~ 1,
+      TRUE ~ 0
+    )
+  ) %>% mutate(
+    race_desc = case_when(
+      race_cd == 1 ~ "White, non-Hispanic",
+      race_cd == 2 ~ "Black, non-Hispanic",
+      race_cd == 3 ~ "Hispanic",
+      race_cd == 4 ~ "American Indian or Alaskan",
+      race_cd == 5 ~ "Asian, Pacific Islander",
+      race_cd == 6 ~ "Unknown/Other",
+      TRUE ~  "Unknown/Other"
+    ),
+    me_desc = case_when(
+      me_code == "B" ~ "Pregnancy",
+      me_code == "C" ~ "Emergency",
+      me_code == "D" ~ "Other",
+      me_code == "F" ~ "Other",
+      me_code == "I" ~ "Institutional regular (CATS 1 3 or 4) (BP16 or 17)",
+      me_code == "N" ~ "FFCHE (Former Foster Child in Higher Education)",
+      me_code == "P" ~ "Three months prior",
+      me_code == "Q" ~ "QMD coverage (Medicare only)",
+      me_code == "R" ~ "Regular",
+      me_code == "T" ~ "1929(b) Base plan 20 MAO client",
+      me_code == "W" ~ "Healthy Texas Women",
+      TRUE ~ "Unknown"
+    ),
+    age_group = case_when(
+    age <= 18 ~ "0-18",
+    age >= 19 & age <= 24 ~ "19-24",
+    age >= 25 & age <= 34 ~ "25-34",
+    age >= 35 & age <= 44 ~ "35-44",
+    age >= 45 & age <= 55 ~ "45-55",
+    TRUE ~ NA_character_
+  ),
+     state_tx = case_when(
+      state == "TX" ~ "TX",
+      state != "TX" ~ "Non-TX",
+      TRUE ~ "Unknown"
+    )
+  ) %>%
+  mutate(los_less_60 = case_when(
+    los <= 60 ~ 1,
+    TRUE ~ 0
+  )) %>%
+  mutate(monthly_anchor_date = as.Date(format(anchor_date, "%Y-%m-01")))
+
+var_label(episodes) <- list(
+    anchor_year = "Year",
+    age = "Age",
+    race_desc = "Race/Ethnicity",
+    age_group = "Age Group",
+    me_desc = "Enrollment Category (Month of birth episode)",
+    state_tx = "State (Month of birth episode)",
+    outcome_type = "Birth Outcome",
+    los = "Length of Stay",
+    hispanic = "Hispanic",
+    los_less_60 = "LOS <= 60 days",
+    diab_sample = "Diabetes Sample",
+    htn_sample = "HTN Sample",
+    monthly_anchor_date = "Anchor Month"
+  )
+
+
+```
+
+# Cohort
+
+```{r}
+cohort <- 
+episodes %>% 
+  filter(age >= 19 & age <= 55) %>%
+  filter(enrolled_birth == 1) %>%
+  filter(state_tx == 'TX') %>% 
+  filter(los <= 60)
+  
+```
+
+```{r add-time-vars}
+cohort <- 
+cohort %>%
+  mutate(
+    week_counter = as.integer(difftime(anchor_date, as.Date('2019-01-01'), units = "weeks")) + 1,
+    biweekly_counter = as.integer(difftime(anchor_date, as.Date('2019-01-01'), units = "days") / 14) + 1,
+    monthly_counter = as.integer(difftime(anchor_date, as.Date('2019-01-01'), units = "days") / 30) + 1,
+    anchor_date_week = as.Date('2019-01-01') + (week_counter - 1) * 7,
+    anchor_date_twoweeks = as.Date('2019-01-01') + (biweekly_counter - 1) * 14,
+    anchor_date_month = as.Date('2019-01-01') + (monthly_counter - 1) * 30
+  )
+
+# Define time periods
+time_periods.6months <- list(
+  pre_FFCRA = list(start = as.Date('2019-01-01'), end = as.Date('2019-09-18')),
+  COVID = list(start = as.Date('2019-09-19'), end = as.Date('2020-06-30')),
+  FFCRA = list(start = as.Date('2020-07-01'), end = as.Date('2022-09-30')),
+  Unwinding = list(start = as.Date('2022-10-01'), end = as.Date('2023-08-31')),
+  Postpartum_extension = list(start = as.Date('2023-09-01'), end = as.Date('2024-06-30'))
+)
+
+# Get a date six months before end of FY23
+six_months_before <- as.Date("2023-08-31") %m-% months(6)
+
+# Create periods for 6 month indicator variables
+cohort <- cohort %>%
+  mutate(
+    period_COVID = case_when(
+      anchor_date >= time_periods.6months$COVID$start & 
+      anchor_date <= time_periods.6months$COVID$end ~ 1,
+      TRUE ~ 0
+    ),
+    period_FFCRA = case_when(
+      anchor_date >= time_periods.6months$FFCRA$start & 
+      anchor_date <= time_periods.6months$FFCRA$end ~ 1,
+      TRUE ~ 0
+    ),
+    period_Unwinding = case_when(
+      anchor_date >= time_periods.6months$Unwinding$start & 
+      anchor_date <= time_periods.6months$Unwinding$end ~ 1,
+      TRUE ~ 0
+    ),
+    period_Postpartum_extension = case_when(
+      anchor_date >= time_periods.6months$Postpartum_extension$start & 
+      anchor_date <= time_periods.6months$Postpartum_extension$end ~ 1,
+      TRUE ~ 0
+    )
+  )
+```
+
+```{r}
+cohort %>% 
+  select(outcome_type, anchor_year, race_desc, age_group, hispanic, htn_sample, diab_sample, me_desc) %>%
+  tbl_summary()  %>% as_flex_table() %>% 
+  theme_box() %>%
+  padding(padding = 1.5) %>%
+  autofit() 
+```
+
+-   Filtered for age, enrollment month of birth, TX location, and LOS \<= 60 days
+
+{{< pagebreak >}}
+
+# Cohort over time
+
+## Total N
+
+```{r}
+
+# Calculate counts for all temporal aggregations
+monthly_counts <- cohort %>%
+  group_by(monthly_anchor_date) %>%
+  summarise(
+    total = n(),
+    diabetes = sum(diab_sample == 1),
+    htn = sum(htn_sample == 1)
+  ) %>%
+  pivot_longer(
+    cols = c(total, diabetes, htn),
+    names_to = "subgroup",
+    values_to = "count"
+  ) %>%
+  mutate(
+    time_period = "Monthly",
+    date = monthly_anchor_date
+  )
+
+biweekly_counts <- cohort %>%
+  group_by(anchor_date_twoweeks) %>%
+  summarise(
+    total = n(),
+    diabetes = sum(diab_sample == 1),
+    htn = sum(htn_sample == 1)
+  ) %>%
+  pivot_longer(
+    cols = c(total, diabetes, htn),
+    names_to = "subgroup",
+    values_to = "count"
+  ) %>%
+  mutate(
+    time_period = "Biweekly",
+    date = anchor_date_twoweeks
+  )
+
+weekly_counts <- cohort %>%
+  group_by(anchor_date_week) %>%
+  summarise(
+    total = n(),
+    diabetes = sum(diab_sample == 1),
+    htn = sum(htn_sample == 1)
+  ) %>%
+  pivot_longer(
+    cols = c(total, diabetes, htn),
+    names_to = "subgroup",
+    values_to = "count"
+  ) %>%
+  mutate(
+    time_period = "Weekly",
+    date = anchor_date_week
+  )
+
+# Combine all data
+all_counts <- bind_rows(monthly_counts, biweekly_counts, weekly_counts)
+
+# Create faceted plot
+ggplot(all_counts, aes(x = date, y = count, color = subgroup)) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~time_period, scales = "free", ncol = 1) +
+  scale_y_continuous(labels = comma) +
+  scale_color_brewer(palette = "Set2") +
+  labs(
+    title = "Total Count and Subgroup Counts Over Time",
+    x = "Date",
+    y = "Count",
+    color = "Group"
+  ) +
+  theme_minimal() +
+  theme(
+    strip.text = element_text(size = 12, face = "bold"),
+    legend.position = "right"
+  )
+
+# cohort %>%
+#   group_by(monthly_anchor_date) %>%
+#   summarise(total_n = n()) %>%
+#   ggplot(aes(x=monthly_anchor_date, y=total_n)) +
+#   geom_line(linewidth = 1) + 
+#   scale_y_continuous(labels = comma)
+# 
+# cohort %>%
+#   group_by(anchor_date_week) %>%
+#   summarise(total_n = n()) %>%
+#   ggplot(aes(x=anchor_date_week, y=total_n)) +
+#   geom_line(linewidth = 1) + 
+#   scale_y_continuous(labels = comma)
+# 
+# cohort %>%
+#   group_by(anchor_date_twoweeks) %>%
+#   summarise(total_n = n()) %>%
+#   ggplot(aes(x=anchor_date_twoweeks, y=total_n)) +
+#   geom_line(linewidth = 1) + 
+#   scale_y_continuous(labels = comma)
+
+
+# 
+# cohort %>%
+#   group_by(monthly_anchor_date, diab_sample) %>%
+#   summarise(total_n = n()) %>%
+#   ggplot(aes(x=monthly_anchor_date, y=total_n, color=as.factor(diab_sample))) +
+#   geom_line(linewidth = 1) + 
+#   scale_y_continuous(labels = comma) +
+#   labs(title="Monthly N w/ diabetes subgroup")
+# 
+# cohort %>%
+#   group_by(anchor_date_twoweeks, diab_sample) %>%
+#   summarise(total_n = n()) %>%
+#   ggplot(aes(x=anchor_date_twoweeks, y=total_n, color=as.factor(diab_sample))) +
+#   geom_line(linewidth = 1) + 
+#   scale_y_continuous(labels = comma) +
+#   labs(title="Every two weeks N w/ diabetes subgroup")
+# 
+# cohort %>%
+#   group_by(anchor_date_week, diab_sample) %>%
+#   summarise(total_n = n()) %>%
+#   ggplot(aes(x=anchor_date_week, y=total_n, color=as.factor(diab_sample))) +
+#   geom_line(linewidth = 1) + 
+#   scale_y_continuous(labels = comma) +
+#   labs(title="Weekly N w/ diabetes subgroup")
+```
+
+## Subgroup percentages
+
+```{r}
+cohort %>%
+  group_by(monthly_anchor_date) %>%
+  summarise(
+    HTN = mean(htn_sample),
+    Diabetes = mean(diab_sample)
+  ) %>%
+  pivot_longer(
+    cols = c(HTN, Diabetes),
+    names_to = "condition",
+    values_to = "percentage"
+  ) %>%
+  ggplot(aes(x = monthly_anchor_date, y = percentage, color = condition)) +
+  geom_line(linewidth = 1) +
+  scale_y_continuous(labels = percent, limits = c(0, 0.5)) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "HTN and Diabetes Subgroup Percentages Over Time",
+    y = "Percentage",
+    x = "Date",
+    color = "Condition"
+  ) +
+  theme_minimal()
+
+```
+
+### What percent of those the subgroups had their DX during episode window?
+
+```{r}
+# Get diabetes QA data
+diabetes.qa <- dbGetQuery(spc, " 
+  select * from chcdwork.dbo.poem_cohort_diab_qa 
+;")
+
+# Get HTN QA data
+htn.qa <- dbGetQuery(spc, " 
+  select * from chcdwork.dbo.poem_cohort_htn_qa 
+;")
+
+# Process diabetes data
+diab_trend <- diabetes.qa %>% 
+  filter(client_nbr %in% cohort$client_nbr) %>%
+  mutate(monthly_anchor_date = as.Date(format(anchor_date, "%Y-%m-01"))) %>%
+  group_by(monthly_anchor_date) %>%
+  summarise(pct_dx_during_episode = mean(during_episode)) %>%
+  mutate(condition = "Diabetes")
+
+# Process HTN data
+htn_trend <- htn.qa %>%
+  filter(client_nbr %in% cohort$client_nbr) %>%
+  mutate(monthly_anchor_date = as.Date(format(anchor_date, "%Y-%m-01"))) %>%
+  group_by(monthly_anchor_date) %>%
+  summarise(pct_dx_during_episode = mean(during_episode)) %>%
+  mutate(condition = "HTN")
+
+# Combine and plot
+bind_rows(diab_trend, htn_trend) %>%
+  ggplot(aes(x = monthly_anchor_date, y = pct_dx_during_episode, color = condition)) +
+  geom_line(linewidth = 1) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "Percentage of Diagnoses During Episode Window",
+    y = "Percentage with DX During Episode",
+    x = "Date",
+    color = "Condition"
+  ) +
+  theme_minimal()
+
+# Clean up
+remove(diabetes.qa, htn.qa, diab_trend, htn_trend)
+invisible(gc())
+```
+
+```{r}
+
+# # Example data frame
+# df <- df %>% 
+#   mutate(
+#     across(names(time_periods), 
+#            ~ if_else(date_var >= time_periods[[.col]]$start & date_var <= time_periods[[.col]]$end, 1, 0), 
+#            .names = "{.col}_indicator")
+#   )
+# 
+# 
+# # Example data frame
+# df <- df %>% 
+#   mutate(
+#     pre_FFCRA_indicator = if_else(date_var >= time_periods$pre_FFCRA$start & date_var <= time_periods$pre_FFCRA$end, 1, 0),
+#     COVID_indicator = if_else(date_var >= time_periods$COVID$start & date_var <= time_periods$COVID$end, 1, 0),
+#     FFCRA_indicator = if_else(date_var >= time_periods$FFCRA$start & date_var <= time_periods$FFCRA$end, 1, 0),
+#     Unwinding_indicator = if_else(date_var >= time_periods$Unwinding$start & date_var <= time_periods$Unwinding$end, 1, 0),
+#     Postpartum_extension_indicator = if_else(date_var >= time_periods$Postpartum_extension$start & date_var <= time_periods$Postpartum_extension$end, 1, 0),
+#     week_counter = as.integer(difftime(date_var, as.Date('2019-01-01'), units = "weeks")) + 1,
+#     biweekly_counter = as.integer(difftime(date_var, as.Date('2019-01-01'), units = "days") / 14) + 1,
+#     monthly_counter = as.integer(difftime(date_var, as.Date('2019-01-01'), units = "days") / 30) + 1,
+#     anchor_date_week = as.Date('2019-01-01') + (week_counter - 1) * 7,
+#     anchor_date_twoweeks = as.Date('2019-01-01') + (biweekly_counter - 1) * 14,
+#     anchor_date_month = as.Date('2019-01-01') + (monthly_counter - 1) * 30
+#   )
+
+```
+
+{{< pagebreak >}}
+
+# Outcomes
+
+## Diabetes Subgroup
+
+```{r}
+diab.subgroup <- 
+  cohort %>% 
+  filter(diab_sample==1) %>%
+  filter(anchor_date <= six_months_before)
+```
+
+### Diabetes Screening 6 Months
+
+```{r}
+# Extract start dates from the time periods list
+period_starts <- data.frame(
+  date = sapply(time_periods.6months, function(x) x$start),
+  period = names(time_periods.6months)
+)
+
+
+# Create the plot with vertical lines
+diab.subgroup %>%
+  group_by(anchor_date_twoweeks) %>%
+  summarise(out_diab_screen_6 = mean(out_diab_screen_6)) %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = out_diab_screen_6)) +
+  geom_line(linewidth = 1) +
+  geom_vline(
+    data = period_starts,
+    aes(xintercept = date, color = period),
+    linetype = "dashed",
+    linewidth=.75
+  ) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  scale_color_brewer(palette = "Set2") +
+  labs(
+    title = "Diabetes Screening Rates 6 Months (Every Two Weeks)",
+    x = "Date",
+    y = "Screening Rate",
+    color = "Period Start"
+  ) +
+  theme_minimal()
+
+
+
+# # Create the plot with vertical lines
+# diab.subgroup %>%
+#   group_by(monthly_anchor_date) %>%
+#   summarise(out_diab_screen_6 = mean(out_diab_screen_6)) %>%
+#   ggplot(aes(x = monthly_anchor_date, y = out_diab_screen_6)) +
+#   geom_line(linewidth = 1) +
+#   geom_vline(
+#     data = period_starts,
+#     aes(xintercept = date, color = period),
+#     linetype = "dashed",
+#     linewidth=.75
+#   ) +
+#   scale_y_continuous(labels = percent, limits = c(0, 1)) +
+#   scale_color_brewer(palette = "Set2") +
+#   labs(
+#     title = "Diabetes Screening Rates 6 Months (Monthly)",
+#     x = "Date",
+#     y = "Screening Rate",
+#     color = "Period Start"
+#   ) +
+#   theme_minimal()
+# 
+# # Create the plot with vertical lines
+# diab.subgroup %>%
+#   group_by(anchor_date_week) %>%
+#   summarise(out_diab_screen_6 = mean(out_diab_screen_6)) %>%
+#   ggplot(aes(x = anchor_date_week, y = out_diab_screen_6)) +
+#   geom_line(linewidth = 1) +
+#   geom_vline(
+#     data = period_starts,
+#     aes(xintercept = date, color = period),
+#     linetype = "dashed",
+#     linewidth=.75
+#   ) +
+#   scale_y_continuous(labels = percent, limits = c(0, 1)) +
+#   scale_color_brewer(palette = "Set2") +
+#   labs(
+#     title = "Diabetes Screening Rates 6 Months (Weekly)",
+#     x = "Date",
+#     y = "Screening Rate",
+#     color = "Period Start"
+#   ) +
+#   theme_minimal()
+
+```
+
+### Diabetes Subgroup Test Type
+
+```{r}
+diab.breakdown.raw <- dbGetQuery(spc, " 
+  select * from chcdwork.dbo.poem_cohort_analysis_diab_detail;
+ ;")
+
+diab.breakdown <- 
+diab.breakdown.raw %>%
+  mutate(
+     state_tx = case_when(
+      state == "TX" ~ "TX",
+      state != "TX" ~ "Non-TX",
+      TRUE ~ "Unknown"
+    )
+  ) %>%
+  mutate(los_less_60 = case_when(
+    los <= 60 ~ 1,
+    TRUE ~ 0
+  )) %>%
+  mutate(monthly_anchor_date = as.Date(format(anchor_date, "%Y-%m-01"))) %>% 
+  filter(age >= 19 & age <= 55) %>%
+  filter(enrolled_birth == 1) %>%
+  filter(state_tx == 'TX') %>% 
+  filter(los <= 60) %>% 
+  filter(diab_sample==1)
+
+
+# For the 6-month outcome
+diab.breakdown %>%
+  group_by(monthly_anchor_date) %>%
+  mutate(total_n = n()) %>%  # Calculate overall n for each monthly_anchor_date
+  ungroup() %>%
+  group_by(monthly_anchor_date, test_type) %>%
+  filter(out_diab_screen_6 == 1) %>%
+  summarise(
+    n = n(),
+    proportion = n / unique(total_n)  # Calculate the proportion
+  ) %>%
+  ggplot(aes(x = monthly_anchor_date, y = proportion, color = test_type)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Proportion of Test Types (6-month Outcome)",
+    y = "Proportion",
+    x = "Monthly Anchor Date",
+    color = "Test Type"
+  ) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+
+# diab.breakdown %>%
+#   group_by(monthly_anchor_date) %>%
+#   mutate(total_n = n()) %>%  # Calculate overall n for each monthly_anchor_date
+#   ungroup() %>%
+#   group_by(monthly_anchor_date, test_type) %>%
+#   filter(out_diab_screen_12 == 1) %>%
+#   summarise(
+#     n = n(),
+#     proportion = n / unique(total_n)  # Calculate the proportion
+#   ) %>%
+#   ggplot(aes(x = monthly_anchor_date, y = proportion, color = test_type)) +
+#   geom_line(linewidth = 1) +
+#   labs(
+#     title = "Proportion of Test Types (12-month Outcome)",
+#     y = "Proportion",
+#     x = "Monthly Anchor Date",
+#     color = "Test Type"
+#   )+ 
+#   scale_y_continuous(labels = percent, limits = c(0,1)) 
+
+
+```
+
+<!-- ## Regression Model  -->
+
+```{r}
+#   lm(out_diab_screen_6 ~ week_counter + period_COVID + period_FFCRA + period_Unwinding + period_Postpartum_extension +
+#                          week_counter*period_COVID + week_counter*period_FFCRA + week_counter*period_Unwinding + 
+#                          week_counter*period_Postpartum_extension + age
+#      ,   data=diab.subgroup ) %>% 
+#   summary()
+# 
+# 
+#   lm(out_diab_screen_6 ~ week_counter + period_COVID + period_FFCRA + period_Unwinding + period_Postpartum_extension 
+#      ,   data=diab.subgroup ) %>%
+#     summary()
+# 
+# summary(diab.model.1)
+# 
+# lm(out_diab_screen_6 ~   period_COVID + period_FFCRA + period_Unwinding + period_Postpartum_extension,   data=diab.subgroup)
+
+
+```
+
+## Overall
+
+### Postpartum
+
+```{r}
+cohort.pp.pct.all <- 
+cohort %>%
+  group_by(monthly_anchor_date) %>%
+  summarise(out_postpartum_6 = mean(out_postpartum_6),
+            out_postpartum_12 = mean(out_postpartum_12)) %>%
+  mutate(category = "Overall")
+
+
+cohort.pp.pct.all %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_postpartum_6)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+
+cohort.pp.pct.all %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_postpartum_12)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+```
+
+## HTN Subgroup
+
+```{r}
+htn.subgroup <- 
+  cohort %>% filter(htn_sample==1)
+```
+
+### Hypertension Medication
+
+```{r}
+htn.subgroup %>%
+  group_by(monthly_anchor_date) %>%
+  summarise(out_htn_med_6 = mean(out_htn_med_6)) %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_htn_med_6)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+
+htn.subgroup %>%
+  group_by(monthly_anchor_date) %>%
+  summarise(out_htn_med_12 = mean(out_htn_med_12)) %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_htn_med_12)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+```
+
+### Postpartum Visits
+
+```{r}
+
+cohort.pp.pct.htn <- 
+htn.subgroup %>%
+  group_by(monthly_anchor_date) %>%
+  summarise(out_postpartum_6 = mean(out_postpartum_6),
+            out_postpartum_12 = mean(out_postpartum_12)) %>%
+  mutate(category = "HTN")
+
+cohort.pp.pct.htn %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_postpartum_6)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+
+cohort.pp.pct.htn %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_postpartum_12)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+```
+
+### Postpartum Visits
+
+```{r}
+cohort.pp.pct.diab <- 
+diab.subgroup %>%
+  group_by(monthly_anchor_date) %>%
+  summarise(out_postpartum_6 = mean(out_postpartum_6),
+            out_postpartum_12 = mean(out_postpartum_12)) %>%
+  mutate(category = "DIAB")
+
+cohort.pp.pct.diab %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_postpartum_6)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+
+cohort.pp.pct.diab %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_postpartum_12)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+```
+
+## Cross Group Comparison
+
+```{r}
+pp.pct.bind <- rbind(cohort.pp.pct.all, cohort.pp.pct.diab, cohort.pp.pct.htn)
+
+pp.pct.bind %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_postpartum_6, color=category)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+
+pp.pct.bind %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_postpartum_12, color=category)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(0,1)) 
+```
+
+### Check live births only to see if higher
+
+```{r}
+lb.only.check <- 
+cohort %>%
+  filter(outcome_type=="LB") %>%
+  group_by(monthly_anchor_date) %>%
+  summarise(out_postpartum_6 = mean(out_postpartum_6),
+            out_postpartum_12 = mean(out_postpartum_12)) %>%
+  mutate(category = "Livebirths Only")
+
+
+check.bind <- rbind(cohort.pp.pct.all, lb.only.check)
+
+check.bind %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_postpartum_12, color=category)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(.5,1)) 
+
+check.bind %>%
+  ggplot(aes(x=monthly_anchor_date, y=out_postpartum_6, color=category)) +
+  geom_line(linewidth = 1) + 
+  scale_y_continuous(labels = percent, limits = c(.5,1)) 
+```
