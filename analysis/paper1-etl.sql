@@ -33,8 +33,8 @@ SELECT DISTINCT
     htn_sample,
     out_diab_screen_6,
     out_diab_screen_12,
-    out_diab_screen_hba1c_6,    -- Added HbA1c specific outcome
-    out_diab_screen_gtt_6,      -- Added GTT specific outcome
+    out_diab_screen_hba1c_6,   
+    out_diab_screen_gtt_6,    
     out_diab_screen_hba1c_12,
     out_diab_screen_gtt_12,
     out_postpartum,
