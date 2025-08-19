@@ -876,6 +876,89 @@ run_comparison_models("out_postpartum_12", htn.subgroup, htn.subgroup_alt,
 
 {{< pagebreak >}}
 
+## Diabetes Subgroup Exclude Pre-existing
+
+```{r}
+# Diabetes screening graph
+
+diab.subgroup %>%
+  group_by(anchor_date_twoweeks, pre_existing_diab) %>%
+  summarise(out_diab_screen_12 = mean(out_diab_screen_12)) %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = out_diab_screen_12, color=as.factor(pre_existing_diab))) +
+  geom_line(linewidth = 1) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  labs(
+    title = "Diabetes Screening Rates 12 Months (Pre-Existing Comparison)",
+    x = "Date",
+    y = "% Episode with Screening",
+  ) +
+  theme_minimal()
+```
+
+### Models
+
+```{r}
+
+# Full sample models
+mod_unadj_full <- lm(out_diab_screen_12 ~ biweekly_counter + period_COVID + period_FFCRA +
+                       biweekly_counter*period_COVID + biweekly_counter*period_FFCRA,
+                     data = diab.subgroup)
+
+mod_adj_full <- lm(out_diab_screen_12 ~ biweekly_counter + period_COVID + period_FFCRA +
+                     biweekly_counter*period_COVID + biweekly_counter*period_FFCRA +
+                     age + no_transfusion_weight,
+                   data = diab.subgroup)
+
+# Restricted (excluding pre-existing diabetes)
+mod_unadj_restricted <- lm(out_diab_screen_12 ~ biweekly_counter + period_COVID + period_FFCRA +
+                             biweekly_counter*period_COVID + biweekly_counter*period_FFCRA,
+                           data = diab.subgroup %>% filter(pre_existing_diab == 0))
+
+mod_adj_restricted <- lm(out_diab_screen_12 ~ biweekly_counter + period_COVID + period_FFCRA +
+                           biweekly_counter*period_COVID + biweekly_counter*period_FFCRA +
+                           age + no_transfusion_weight,
+                         data = diab.subgroup %>% filter(pre_existing_diab == 0))
+
+# Convert to regression tables
+tbl_unadj_full <- tbl_regression(mod_unadj_full,
+  intercept = TRUE,
+  estimate_fun = ~ style_number(.x, digits = 4),
+  pvalue_fun   = ~ style_pvalue(.x, digits = 2))
+
+tbl_unadj_restricted <- tbl_regression(mod_unadj_restricted,
+  intercept = TRUE,
+  estimate_fun = ~ style_number(.x, digits = 4),
+  pvalue_fun   = ~ style_pvalue(.x, digits = 2))
+
+# Put unadjusted side by side
+tbl_merge(
+  tbls = list(tbl_unadj_full, tbl_unadj_restricted),
+  tab_spanner = c("**Full Sample**", "**Excluding Pre-Existing Diabetes**")
+)
+
+
+```
+
+```{r}
+# Repeat for adjusted models
+tbl_adj_full <- tbl_regression(mod_adj_full,
+  intercept = TRUE,
+  estimate_fun = ~ style_number(.x, digits = 4),
+  pvalue_fun   = ~ style_pvalue(.x, digits = 2))
+
+tbl_adj_restricted <- tbl_regression(mod_adj_restricted,
+  intercept = TRUE,
+  estimate_fun = ~ style_number(.x, digits = 4),
+  pvalue_fun   = ~ style_pvalue(.x, digits = 2))
+
+tbl_merge(
+  tbls = list(tbl_adj_full, tbl_adj_restricted),
+  tab_spanner = c("**Full Sample**", "**Excluding Pre-Existing Diabetes**")
+)
+```
+
+{{< pagebreak >}}
+
 ## Diabetes Subgroup Test Type Graphs
 
 ```{r}
