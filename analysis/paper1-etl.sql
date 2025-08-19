@@ -30,6 +30,7 @@ DROP TABLE IF EXISTS chcdwork.dbo.poem_cohort_analysis1;
 SELECT DISTINCT 
     a.*, 
     diab_sample,
+    pre_existing_diab,
     htn_sample,
     out_diab_screen_6,
     out_diab_screen_12,

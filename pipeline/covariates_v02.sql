@@ -90,7 +90,7 @@ select *
 -- Get all diabetes DX
 DROP TABLE IF EXISTS CHCDWORK.dbo.poem_cohort_subgroup_dm1;
 
-SELECT distinct a.client_nbr, a.clm_from_date
+SELECT distinct a.client_nbr, a.clm_from_date, b.variable_name
 INTO CHCDWORK.dbo.poem_cohort_subgroup_dm1
 FROM CHCDWORK.dbo.poem_cohort_dx a 
 JOIN CHCDWORK.dbo.poem_covariates_dx_dm b 
@@ -105,8 +105,12 @@ SELECT
     CASE 
         WHEN COUNT(b.clm_from_date) > 0 THEN 1 
         ELSE 0 
-    END AS diab_sample
-into CHCDWORK.dbo.poem_cohort_diab_sample
+    END AS diab_sample,
+    CASE 
+        WHEN MAX(CASE WHEN b.variable_name LIKE '%pre%' THEN 1 ELSE 0 END) = 1 
+        THEN 1 ELSE 0 
+    END AS pre_existing_diab
+INTO CHCDWORK.dbo.poem_cohort_diab_sample
 FROM CHCDWORK.dbo.poem_cohort a
 LEFT JOIN CHCDWORK.dbo.poem_cohort_subgroup_dm1 b 
     ON a.client_nbr = b.client_nbr 
@@ -114,7 +118,7 @@ LEFT JOIN CHCDWORK.dbo.poem_cohort_subgroup_dm1 b
     AND DATEDIFF(day, b.clm_from_date, a.anchor_date) BETWEEN 0 AND 280
 GROUP BY 
     a.client_nbr, 
-    a.ep_num;  
+    a.ep_num;
  
 DROP TABLE IF EXISTS CHCDWORK.dbo.poem_cohort_subgroup_dm1;
 
