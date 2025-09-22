@@ -400,7 +400,7 @@ drop table if exists chcdwork.dbo.poem_temp_bday;
 
 -- enrollment first (can use for zips after )
 -- get enrl before chip_enrl
-drop table if exists chcdwork.dbo.poem_demographics;
+drop table if exists chcdwork.dbo.poem_demographics_raw;
 
 -- Create the new table with combined results
 SELECT DISTINCT
@@ -410,8 +410,10 @@ SELECT DISTINCT
        'enrl' AS src_table,
        CAST(SUBSTRING(elig_date, 1, 6) + '01' AS DATE) AS elig_month,
        LEFT(zip, 5) AS zip,
-       CAST(SUBSTRING(elig_date, 1, 4) AS FLOAT) AS elig_year  -- Extract year directly
-INTO chcdwork.dbo.poem_demographics
+       CAST(SUBSTRING(elig_date, 1, 4) AS FLOAT) AS elig_year  ,
+       contract_id ,
+       smib as dual
+INTO chcdwork.dbo.poem_demographics_raw
 FROM chcdwork.dbo.enrl
 WHERE CAST(SUBSTRING(elig_date, 1, 4) AS INT) > 2018
 UNION ALL
@@ -422,7 +424,9 @@ SELECT DISTINCT
        'chip_enrl' AS src_table,
        CAST(SUBSTRING(chip.elig_month, 1, 6) + '01' AS DATE) AS elig_month,
        LEFT(chip.mailing_zip, 5) AS zip,
-       CAST(SUBSTRING(chip.elig_month, 1, 4) AS FLOAT) AS elig_year  -- Extract year directly
+       CAST(SUBSTRING(chip.elig_month, 1, 4) AS FLOAT) AS elig_year ,
+       plan_cd as contract_id,
+       0 as dual
 FROM chcdwork.dbo.chip_enrl chip
 LEFT JOIN chcdwork.dbo.enrl enrl
   ON chip.client_nbr = enrl.client_nbr
@@ -430,7 +434,17 @@ LEFT JOIN chcdwork.dbo.enrl enrl
 WHERE enrl.client_nbr IS NULL
   AND CAST(SUBSTRING(chip.elig_month, 1, 4) AS INT) > 2018;
  
-
+ 
+ --- Add Plan
+ drop table if exists chcdwork.dbo.poem_demographics;
+ 
+select distinct 
+       a.*, b.MCO_PROGRAM_NM as plan_
+into chcdwork.dbo.poem_demographics
+from chcdwork.dbo.poem_demographics_raw a
+join MEDICAID.dbo.LU_CONTRACT b 
+  on a.contract_id = b.PLAN_CD ; 
+     
 -----------------------------------
 --- Add Enrollment info to Episodes
 -----------------------------------
@@ -452,7 +466,9 @@ select distinct a.* , b.dob,
        ROW_NUMBER() over (PARTITION by a.client_nbr order by start_date ) as ep_num,
        a.client_nbr + '-' + cast(ROW_NUMBER() over (PARTITION by a.client_nbr order by start_date ) as varchar) as ep_id,
        DATEDIFF(day, start_date, end_date)  + 1 as los ,
-       case when c.client_nbr is null then 0 else 1 end as enrolled_birth
+       case when c.client_nbr is null then 0 else 1 end as enrolled_birth,
+       c.plan_,
+       c.dual
   into chcdwork.dbo.poem_episodes_enrollment
   from chcdwork.dbo.poem_episodes_build a 
   inner join chcdwork.dbo.poem_dob b
@@ -465,9 +481,7 @@ select distinct a.* , b.dob,
   and c.elig_year = zip.year
   ;
  
-  
-  
-  select count(*) from chcdwork.dbo.poem_episodes_enrollment ;
+
    
 --- check episode code 
 -- should be equal
@@ -487,15 +501,12 @@ SELECT client_nbr,
     ep_num,
     start_date,
     end_date,
-    -- Calculate the total number of days including both start and end dates
     total_days = DATEDIFF(day, start_date, end_date) + 1,
-    -- Determine the tie breaker based on a pseudo-random but reproducible hash of client_nbr
     tie_breaker = CASE 
                     WHEN (DATEDIFF(day, start_date, end_date) + 1) % 2 = 0 
                     THEN ABS(CHECKSUM(client_nbr)) % 2 
                     ELSE 0 
                   END,
-    -- Calculate the midpoint offset from the start_date
     midpoint_offset = FLOOR(DATEDIFF(day, start_date, end_date) / 2.0)
                       + CASE 
                           WHEN (DATEDIFF(day, start_date, end_date) + 1) % 2 = 0 
@@ -541,12 +552,6 @@ select a.* , b.midpoint_date as anchor_date,
    group by year(anchor_date)
  ;
  
- --986069
- 
- select *
-   from chcdwork.dbo.poem_cohort ;
-
-  
   
   
 /*  select a.*, b.out_enroll_90 , c.out_outpatient_contact , d.out_postpartum 

@@ -14,14 +14,14 @@
 <title>A</title>
 <polygon fill="#d3d3d3" stroke="#000000" points="333,-507.0019 117,-507.0019 117,-465.7981 333,-465.7981 333,-507.0019"/>
 <text text-anchor="middle" x="225" y="-490.6" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">Initial episodes</text>
-<text text-anchor="middle" x="225" y="-473.8" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">(n = 986069)</text>
+<text text-anchor="middle" x="225" y="-473.8" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">(n = 1189041)</text>
 </g>
 <!-- B -->
 <g id="node2" class="node">
 <title>B</title>
 <polygon fill="#d3d3d3" stroke="#000000" points="333,-429.4019 117,-429.4019 117,-388.1981 333,-388.1981 333,-429.4019"/>
 <text text-anchor="middle" x="225" y="-413" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">Aged 19&#45;55</text>
-<text text-anchor="middle" x="225" y="-396.2" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">(n = 946821)</text>
+<text text-anchor="middle" x="225" y="-396.2" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">(n = 1142107)</text>
 </g>
 <!-- A&#45;&gt;B -->
 <g id="edge1" class="edge">
@@ -34,7 +34,7 @@
 <title>C</title>
 <polygon fill="#d3d3d3" stroke="#000000" points="333,-351.8019 117,-351.8019 117,-310.5981 333,-310.5981 333,-351.8019"/>
 <text text-anchor="middle" x="225" y="-335.4" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">Enrolled at birth</text>
-<text text-anchor="middle" x="225" y="-318.6" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">(n = 946111)</text>
+<text text-anchor="middle" x="225" y="-318.6" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">(n = 1138849)</text>
 </g>
 <!-- B&#45;&gt;C -->
 <g id="edge2" class="edge">
@@ -47,7 +47,7 @@
 <title>D</title>
 <polygon fill="#d3d3d3" stroke="#000000" points="333,-274.2019 117,-274.2019 117,-232.9981 333,-232.9981 333,-274.2019"/>
 <text text-anchor="middle" x="225" y="-257.8" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">Texas residents</text>
-<text text-anchor="middle" x="225" y="-241" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">(n = 941781)</text>
+<text text-anchor="middle" x="225" y="-241" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">(n = 1133442)</text>
 </g>
 <!-- C&#45;&gt;D -->
 <g id="edge3" class="edge">
@@ -60,7 +60,7 @@
 <title>E</title>
 <polygon fill="#d3d3d3" stroke="#000000" points="333,-196.6019 117,-196.6019 117,-155.3981 333,-155.3981 333,-196.6019"/>
 <text text-anchor="middle" x="225" y="-180.2" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">LOS &lt;= 60 days</text>
-<text text-anchor="middle" x="225" y="-163.4" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">(n = 941481)</text>
+<text text-anchor="middle" x="225" y="-163.4" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">(n = 1133099)</text>
 </g>
 <!-- D&#45;&gt;E -->
 <g id="edge4" class="edge">
@@ -72,8 +72,8 @@
 <g id="node6" class="node">
 <title>F</title>
 <polygon fill="#d3d3d3" stroke="#000000" points="333,-119.0019 117,-119.0019 117,-77.7981 333,-77.7981 333,-119.0019"/>
-<text text-anchor="middle" x="225" y="-102.6" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">ME_CODE = R</text>
-<text text-anchor="middle" x="225" y="-85.8" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">(n = 722486)</text>
+<text text-anchor="middle" x="225" y="-102.6" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">Enrollment filters</text>
+<text text-anchor="middle" x="225" y="-85.8" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">(n = 865079)</text>
 </g>
 <!-- E&#45;&gt;F -->
 <g id="edge5" class="edge">
@@ -86,7 +86,7 @@
 <title>G</title>
 <polygon fill="#d3d3d3" stroke="#000000" points="216,-41.4019 0,-41.4019 0,-.1981 216,-.1981 216,-41.4019"/>
 <text text-anchor="middle" x="108" y="-25" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">Diabetes sample</text>
-<text text-anchor="middle" x="108" y="-8.2" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">(n = 88883)</text>
+<text text-anchor="middle" x="108" y="-8.2" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">(n = 107816)</text>
 </g>
 <!-- F&#45;&gt;G -->
 <g id="edge6" class="edge">
@@ -99,7 +99,7 @@
 <title>H</title>
 <polygon fill="#d3d3d3" stroke="#000000" points="450,-41.4019 234,-41.4019 234,-.1981 450,-.1981 450,-41.4019"/>
 <text text-anchor="middle" x="342" y="-25" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">Hypertension sample</text>
-<text text-anchor="middle" x="342" y="-8.2" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">(n = 128321)</text>
+<text text-anchor="middle" x="342" y="-8.2" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">(n = 156524)</text>
 </g>
 <!-- F&#45;&gt;H -->
 <g id="edge7" class="edge">

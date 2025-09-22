@@ -1,29 +1,6 @@
-
-----
--- Rurality
----
-drop table if exists chcdwork.dbo.poem_cohort_rurality;
-
-with get_code as (
-select a.client_nbr , a.ep_num, b.county_fips , 
-       case when cast(c.value as int) between 1 and 3 then 1
-            when cast(c.value as int) between 4 and 9 then 0
-            else null 
-       end as urban
-  from chcdwork.dbo.poem_cohort a 
-  join CHCDWORK.dbo.ref_zip_code_poem b 
-    on cast(a.zip as varchar) = cast(b.zip as varchar)
-  left outer join CHCDWORK.dbo.rurality_rucc_2023 c 
-    on cast(b.county_fips as varchar) = cast(c.fips as varchar)
-   and cast(c.[attribute] as varchar) = 'RUCC_2023' 
-  )
- select client_nbr, ep_num, max(urban) as urban 
- into chcdwork.dbo.poem_cohort_rurality
- from get_code
- group by client_nbr, ep_num
-  ; 
- 
- --- cohort table 
+/*
+ * Build table
+ */
 
 DROP TABLE IF EXISTS chcdwork.dbo.poem_cohort_analysis1;
 
@@ -58,9 +35,7 @@ SELECT DISTINCT
     total_claims_12,
     smm_weight, 
     no_transfusion_weight,
-    rr.urban,
-    ttm.had_claims_3_12_months,
-    ztm.had_claims_0_12_months
+    enroll.out_enroll_12
 INTO chcdwork.dbo.poem_cohort_analysis1
 FROM chcdwork.dbo.poem_cohort a 
 LEFT JOIN CHCDWORK.dbo.poem_cohort_diab_sample b 
@@ -81,21 +56,15 @@ LEFT JOIN CHCDWORK.dbo.poem_cohort_htn_sample h
 LEFT JOIN CHCDWORK.dbo.poem_outcomes_out_htn_med hm
     ON a.client_nbr = hm.client_nbr 
     AND a.ep_num = hm.ep_num
-LEFT JOIN CHCDWORK.dbo.poem_outcomes_outpatient_12 op  -- Added outpatient outcomes join
+LEFT JOIN CHCDWORK.dbo.poem_outcomes_outpatient_12 op  
     ON a.client_nbr = op.client_nbr 
     AND a.ep_num = op.ep_num
 LEFT JOIN CHCDWORK.dbo.poem_cohort_weights w
     ON a.client_nbr = w.client_nbr 
     AND a.ep_num = w.ep_num
-left join chcdwork.dbo.poem_cohort_rurality rr 
-  ON a.client_nbr = rr.client_nbr 
- AND a.ep_num = rr.ep_num
- left join chcdwork.dbo.poem_outcomes_3_12_months ttm
-  ON a.client_nbr = ttm.client_nbr 
- AND a.ep_num = ttm.ep_num
- left join chcdwork.dbo.poem_outcomes_0_12_months ztm
-  ON a.client_nbr = ztm.client_nbr 
- AND a.ep_num = ztm.ep_num
+ left join CHCDWORK.dbo.poem_outcomes_enrollment enroll 
+    ON a.client_nbr = enroll.client_nbr 
+   AND a.ep_num = enroll.ep_num
 ;
 
   select count(*) 
@@ -108,7 +77,7 @@ left join chcdwork.dbo.poem_cohort_rurality rr
     from chcdwork.dbo.poem_outcomes_out_htn_med
     ;
     
-select * from chcdwork.dbo.poem_cohort_analysis1
+select * from chcdwork.dbo.poem_cohort_analysis1;
    
  --- get diabetes detail 
 drop table if exists chcdwork.dbo.poem_cohort_analysis_diab_detail;
@@ -252,4 +221,62 @@ LEFT JOIN
   
   
   
-  
+  /*
+   * 
+   * 
+   * 
+   * SELECT 
+    YEAR(clm_from_date) AS year_,
+    MONTH(clm_from_date) AS month_,
+    COUNT(*) AS record_count
+FROM CHCDWORK.dbo.poem_cohort_dx
+GROUP BY 
+    YEAR(clm_from_date),
+    MONTH(clm_from_date)
+ORDER BY 
+    YEAR(clm_from_date),
+    MONTH(clm_from_date);
+   
+ SELECT 
+    YEAR(to_dos) AS year_,
+    MONTH(to_dos) AS month_,
+    COUNT(*) AS record_count
+FROM CHCDWORK.dbo.poem_cohort_cpt
+GROUP BY 
+    YEAR(to_dos),
+    MONTH(to_dos)
+ORDER BY 
+    YEAR(to_dos),
+    MONTH(to_dos);
+   
+   
+ SELECT 
+    YEAR(date_) AS year_,
+    MONTH(date_) AS month_,
+    COUNT(*) AS record_count
+FROM CHCDWORK.dbo.poem_outcomes_outpatient_all
+GROUP BY 
+    YEAR(date_),
+    MONTH(date_)
+ORDER BY 
+    YEAR(date_),
+    MONTH(date_);
+    */
+
+
+/*
+ * 
+ * select me_code , plan_, count(*)
+  from chcdwork.dbo.poem_cohort
+  group by me_code , plan_
+  order by me_code , plan_;
+ 
+ select me_code , plan_, dual, count(*)
+  from chcdwork.dbo.poem_cohort
+  group by me_code , plan_, dual
+  order by me_code , plan_, dual;
+ 
+ select me_tp, count(*)  
+  from chcdwork.dbo.enrl group by me_tp order by count(*) ;
+ 
+ **/

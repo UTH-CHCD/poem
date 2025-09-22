@@ -138,6 +138,10 @@ union all
 select trim(pcn) as client_nbr,  cast(RX_FILL_DT as date) as to_dosfrom, 
        trim(NDC) as ndc 
   from MEDICAID.dbo.MCO_RX_FY23
+  union all 
+select trim(pcn) as client_nbr,  cast(RX_FILL_DT as date) as to_dosfrom, 
+       trim(NDC) as ndc 
+  from MEDICAID.dbo.MCO_RX_FY24
 union all 
 select trim(pcn) as client_nbr,  cast(RX_FILL_DT as date) as fill_dt, 
        trim(NDC) as ndc 
@@ -162,6 +166,10 @@ union all
 select trim(pcn) as client_nbr,  cast(RX_FILL_DT as date) as to_dosfrom, 
        trim(NDC) as ndc 
   from MEDICAID.dbo.FFS_RX_FY23
+  union all 
+select trim(pcn) as client_nbr,  cast(RX_FILL_DT as date) as to_dosfrom, 
+       trim(NDC) as ndc 
+  from MEDICAID.dbo.FFS_RX_FY24
 union all 
 select trim(pcn) as client_nbr,  cast(RX_FILL_DT as date) as to_dosfrom, 
        trim(NDC) as ndc 
@@ -190,6 +198,10 @@ union all
 select trim(pcn) as client_nbr,  cast(RX_FILL_DT as date) as to_dosfrom, 
        trim(NDC) as ndc 
   from MEDICAID.dbo.CHIP_RX_FY23
+union all 
+select trim(pcn) as client_nbr,  cast(RX_FILL_DT as date) as to_dosfrom, 
+       trim(NDC) as ndc 
+  from MEDICAID.dbo.CHIP_RX_FY24
   ) a 
   join chcdwork.dbo.poem_cohort b 
      on a.client_nbr = b.client_nbr;
