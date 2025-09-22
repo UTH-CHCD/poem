@@ -248,35 +248,46 @@ select * from MEDICAID.dbo.CHIP_ENRL_FY24
 where gender_cd = 'F';
 
 
-select * from CHCDWORK.dbo.enrl;
-
-
 ---------------------------------------------
 --- Detail Tables  ----------------------
 ---------------------------------------------
 
 drop table if exists CHCDWORK.dbo.clm_detail;
 
-select trim(icn) as icn, 
-       cast(TO_DOS as date) as to_dos, 
-       trim(PROC_CD) as proc_cd,
-       trim(TXM_CD) as taxonomy_cd
-into  CHCDWORK.dbo.clm_detail
+select 
+    trim(icn) as icn, 
+    cast(TO_DOS as date) as to_dos, 
+    trim(PROC_CD) as proc_cd,
+    trim(TXM_CD) as taxonomy_cd,
+    trim(PROC_MOD_1) as proc_mod_1,
+    trim(PROC_MOD_2) as proc_mod_2,
+    trim(PROC_MOD_3) as proc_mod_3,
+    trim(PROC_MOD_4) as proc_mod_4,
+    trim(PROC_MOD_5) as proc_mod_5,
+    case when len(trim(POS)) = 1 then '0' + trim(POS) else trim(POS) end as pos,
+    case when len(trim(REV_CD)) = 1 then '0' + trim(REV_CD) else trim(REV_CD) end as rev_cd
+into CHCDWORK.dbo.clm_detail
 from (
-select icn, TO_DOS, PROC_CD, TXM_CD  from MEDICAID.dbo.CLM_DETAIL_19
-union all 
-select icn, TO_DOS, PROC_CD, TXM_CD  from MEDICAID.dbo.CLM_DETAIL_20
-union all
-select icn, TO_DOS, PROC_CD, TXM_CD  from MEDICAID.dbo.CLM_DETAIL_21
-union all
-select icn, TO_DOS, PROC_CD, TXM_CD  from MEDICAID.dbo.CLM_DETAIL_22
-union all
-select icn, TO_DOS, PROC_CD, TXM_CD  from MEDICAID.dbo.CLM_DETAIL_23
-union all 
-select icn, TO_DOS, PROC_CD, TXM_CD  from MEDICAID.dbo.CLM_DETAIL_24
+    select icn, TO_DOS, PROC_CD, TXM_CD, PROC_MOD_1, PROC_MOD_2, PROC_MOD_3, PROC_MOD_4, PROC_MOD_5, POS, REV_CD 
+      from MEDICAID.dbo.CLM_DETAIL_19
+    union all 
+    select icn, TO_DOS, PROC_CD, TXM_CD, PROC_MOD_1, PROC_MOD_2, PROC_MOD_3, PROC_MOD_4, PROC_MOD_5, POS, REV_CD 
+      from MEDICAID.dbo.CLM_DETAIL_20
+    union all
+    select icn, TO_DOS, PROC_CD, TXM_CD, PROC_MOD_1, PROC_MOD_2, PROC_MOD_3, PROC_MOD_4, PROC_MOD_5, POS, REV_CD  
+      from MEDICAID.dbo.CLM_DETAIL_21
+    union all
+    select icn, TO_DOS, PROC_CD, TXM_CD, PROC_MOD_1, PROC_MOD_2, PROC_MOD_3, PROC_MOD_4, PROC_MOD_5, POS, REV_CD   
+      from MEDICAID.dbo.CLM_DETAIL_22
+    union all
+    select icn, TO_DOS, PROC_CD, TXM_CD, PROC_MOD_1, PROC_MOD_2, PROC_MOD_3, PROC_MOD_4, PROC_MOD_5, POS, REV_CD   
+      from MEDICAID.dbo.CLM_DETAIL_23
+      union all
+    select icn, TO_DOS, PROC_CD, TXM_CD, PROC_MOD_1, PROC_MOD_2, PROC_MOD_3, PROC_MOD_4, PROC_MOD_5, POS, REV_CD   
+      from MEDICAID.dbo.CLM_DETAIL_24
 ) a
-where proc_cd <> ''
-;
+where proc_cd <> '' or REV_CD <> '';
+
 
 --- enc 
 drop table if exists CHCDWORK.dbo.enc_detail;
@@ -285,28 +296,35 @@ drop table if exists CHCDWORK.dbo.enc_detail;
 select trim(derv_enc) as derv_enc, 
        cast(TDOS_CSL as date) as to_date, 
        trim(PROC_CD) as proc_cd, 
-       trim(SUB_REND_PRV_TAX_CD) as taxonomy_cd
+       trim(SUB_REND_PRV_TAX_CD) as taxonomy_cd,
+       trim(PROC_MOD_CD_1) as proc_mod_1,
+       trim(PROC_MOD_CD_2) as proc_mod_2,
+       trim(PROC_MOD_CD_3) as proc_mod_3,
+       trim(PROC_MOD_CD_4) as proc_mod_4,
+       cast(NULL as varchar) as proc_mod_5,
+       trim(POS) as pos,
+       trim(REV_CD) as rev_cd
 into  CHCDWORK.dbo.enc_detail
 from (
-select derv_enc, TDOS_CSL, PROC_CD, SUB_REND_PRV_TAX_CD  from MEDICAID.dbo.ENC_DET_19
+select derv_enc, TDOS_CSL, PROC_CD, SUB_REND_PRV_TAX_CD, PROC_MOD_CD_1, PROC_MOD_CD_2,PROC_MOD_CD_3,PROC_MOD_CD_4, POS, REV_CD 
+  from MEDICAID.dbo.ENC_DET_19
 union all 
-select derv_enc, TDOS_CSL, PROC_CD ,SUB_REND_PRV_TAX_CD  from MEDICAID.dbo.ENC_DET_20
+select derv_enc, TDOS_CSL, PROC_CD ,SUB_REND_PRV_TAX_CD, PROC_MOD_CD_1, PROC_MOD_CD_2,PROC_MOD_CD_3,PROC_MOD_CD_4, POS, REV_CD
+  from MEDICAID.dbo.ENC_DET_20
 union all
-select derv_enc, TDOS_CSL, PROC_CD ,SUB_REND_PRV_TAX_CD  from MEDICAID.dbo.ENC_DET_21
+select derv_enc, TDOS_CSL, PROC_CD ,SUB_REND_PRV_TAX_CD, PROC_MOD_CD_1, PROC_MOD_CD_2,PROC_MOD_CD_3,PROC_MOD_CD_4, POS, REV_CD
+  from MEDICAID.dbo.ENC_DET_21
 union all
-select derv_enc, TDOS_CSL, PROC_CD ,SUB_REND_PRV_TAX_CD  from MEDICAID.dbo.ENC_DET_22
+select derv_enc, TDOS_CSL, PROC_CD ,SUB_REND_PRV_TAX_CD, PROC_MOD_CD_1, PROC_MOD_CD_2,PROC_MOD_CD_3,PROC_MOD_CD_4, POS, REV_CD
+  from MEDICAID.dbo.ENC_DET_22
 union all
-select derv_enc, TDOS_CSL, PROC_CD ,SUB_REND_PRV_TAX_CD  from MEDICAID.dbo.ENC_DET_23
-union all 
-select derv_enc, TDOS_CSL, PROC_CD ,SUB_REND_PRV_TAX_CD  from MEDICAID.dbo.ENC_DET_24
+select derv_enc, TDOS_CSL, PROC_CD ,SUB_REND_PRV_TAX_CD, PROC_MOD_CD_1, PROC_MOD_CD_2,PROC_MOD_CD_3,PROC_MOD_CD_4, POS, REV_CD
+  from MEDICAID.dbo.ENC_DET_23
+  union all
+select derv_enc, TDOS_CSL, PROC_CD ,SUB_REND_PRV_TAX_CD, PROC_MOD_CD_1, PROC_MOD_CD_2,PROC_MOD_CD_3,PROC_MOD_CD_4, POS, REV_CD
+  from MEDICAID.dbo.ENC_DET_24
 ) a
-where proc_cd <> ''
+where proc_cd <> '' or REV_CD <> ''
 ;
-
-------------------------
---- RX TABLES ----------
-------------------------
-
-
 
 

@@ -1,0 +1,1293 @@
+---
+title: "POEM TX Paper 1"
+date: today
+format: 
+  docx:
+    df-print: paged
+    page-layout: full
+    fig-width: 12
+    fig-height: 8
+    out-width: 100%
+  html:
+    fig-width: 12
+    fig-height: 8
+editor: visual
+execute: 
+  echo: false
+  warning: false
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup}
+#| echo: false
+#| warning: false
+#| 
+
+# Load packages 
+pacman::p_load(RPostgres, DBI, keyring, janitor, tidyverse, readxl,
+               gtsummary, ggplot2, labelled, clipr, viridis, ggrepel, scales, ggthemes, flextable, DiagrammeR,
+               odbc, openxlsx, beepr, tictoc, here, sandwich, lmtest, lubridate, patchwork, ggnewscale, cowplot)
+
+#### Setup File Paths ####
+# Get the location of this current .R file 
+current_dir <- here::here()
+
+#### Database Connection 
+spc <- dbConnect(odbc::odbc(),
+	 dsn = "SPC",
+	 bigint = "integer")
+
+options(scipen = 999)
+
+
+# Set Themes
+
+my_theme <- function() {
+  theme_minimal(base_size = 10) +
+    theme(
+      text = element_text(family = "sans", size=14),
+      axis.text.y = element_text(size = 12, face="plain", margin = margin(r = 10, unit = "pt")),
+      axis.title.y = element_text(size = 13, face = "bold", margin = margin(r = 20, unit = "pt")) ,
+      axis.title.x = element_text(size = 13, face = "bold", margin = margin(t = 20, unit = "pt")) , 
+      plot.caption = element_text(size = 12, face = "italic", margin = margin(t = 20, r=20, b = 5, l=20, unit = "pt"))
+    )
+}
+
+set_flextable_defaults(padding=2.5)
+
+theme_set(my_theme())
+
+FitFlextableToPage <- function(ft, pgwidth = 6.5){
+
+  ft_out <- ft %>% autofit()
+
+  ft_out <- width(ft_out, width = dim(ft_out)$widths*pgwidth /(flextable_dim(ft_out)$widths))
+  return(ft_out)
+}
+
+
+```
+
+```{r get-outcomes}
+
+all.df <- dbGetQuery(spc, " 
+  select * from chcdwork.dbo.poem_cohort_analysis1 
+ ;")
+
+all.df[sapply(all.df, is.numeric)] <- 
+  lapply(all.df[sapply(all.df, is.numeric)], function(x) ifelse(is.na(x), 0, x))
+
+```
+
+```{r clean-data}
+# Grab Data 
+
+episodes <- 
+  all.df %>%
+  mutate(
+    hispanic = case_when(
+      race_cd == 3 ~ 1,
+      TRUE ~ 0
+    )
+  ) %>% mutate(
+    race_desc = case_when(
+      race_cd == 1 ~ "White, non-Hispanic",
+      race_cd == 2 ~ "Black, non-Hispanic",
+      race_cd == 3 ~ "Hispanic",
+      race_cd == 4 ~ "American Indian or Alaskan",
+      race_cd == 5 ~ "Asian, Pacific Islander",
+      race_cd == 6 ~ "Unknown/Other",
+      TRUE ~  "Unknown/Other"
+    ),
+    me_desc = case_when(
+      me_code == "B" ~ "Pregnancy",
+      me_code == "C" ~ "Emergency",
+      me_code == "D" ~ "Other",
+      me_code == "F" ~ "Other",
+      me_code == "I" ~ "Institutional regular (CATS 1 3 or 4) (BP16 or 17)",
+      me_code == "N" ~ "FFCHE (Former Foster Child in Higher Education)",
+      me_code == "P" ~ "Three months prior",
+      me_code == "Q" ~ "QMD coverage (Medicare only)",
+      me_code == "R" ~ "Regular",
+      me_code == "T" ~ "1929(b) Base plan 20 MAO client",
+      me_code == "W" ~ "Healthy Texas Women",
+      TRUE ~ "Unknown"
+    ),
+    preg_med = case_when(
+  me_code == "R" ~ 1,
+  me_code == "C" ~ 0,
+  TRUE ~ NA_real_
+),
+    age_group = case_when(
+    age <= 18 ~ "0-18",
+    age >= 19 & age <= 24 ~ "19-24",
+    age >= 25 & age <= 34 ~ "25-34",
+    age >= 35 & age <= 44 ~ "35-44",
+    age >= 45 & age <= 55 ~ "45-55",
+    TRUE ~ NA_character_
+  ),
+     state_tx = case_when(
+      state == "TX" ~ "TX",
+      state != "TX" ~ "Non-TX",
+      TRUE ~ "Unknown"
+    )
+  ) %>%
+  mutate(los_less_60 = case_when(
+    los <= 60 ~ 1,
+    TRUE ~ 0
+  )) %>%
+  mutate(monthly_anchor_date = as.Date(format(anchor_date, "%Y-%m-01")))
+
+var_label(episodes) <- list(
+    anchor_year = "Year",
+    age = "Age",
+    race_desc = "Race/Ethnicity",
+    age_group = "Age Group",
+    me_desc = "Enrollment Category (Month of birth episode)",
+    state_tx = "State (Month of birth episode)",
+    outcome_type = "Birth Outcome",
+    los = "Length of Stay",
+    hispanic = "Hispanic",
+    los_less_60 = "LOS <= 60 days",
+    diab_sample = "Diabetes Sample",
+    htn_sample = "HTN Sample",
+    monthly_anchor_date = "Anchor Month",
+    no_transfusion_weight = "Index No Transfusion Weight",
+    plan_ = "Plan",
+    dual = "Dual"
+  )
+
+
+```
+
+```{r filter-cohort}
+cohort <- 
+episodes %>% 
+  filter(age >= 19 & age <= 55) %>%
+  filter(enrolled_birth == 1) %>%
+  filter(state_tx == 'TX') %>% 
+  filter(los <= 60) %>%
+  filter( me_code == "R") %>%
+  filter( plan_ != "MMP") %>%
+  filter(dual == 0) 
+  
+```
+
+```{r add-time-vars}
+cohort <- 
+cohort %>%
+  mutate(
+    week_counter = as.integer(difftime(anchor_date, as.Date('2019-01-01'), units = "weeks")) + 1,
+    biweekly_counter = as.integer(difftime(anchor_date, as.Date('2019-01-01'), units = "days") / 14) + 1,
+    monthly_counter = as.integer(difftime(anchor_date, as.Date('2019-01-01'), units = "days") / 30) + 1,
+    anchor_date_week = as.Date('2019-01-01') + (week_counter - 1) * 7,
+    anchor_date_twoweeks = as.Date('2019-01-01') + (biweekly_counter - 1) * 14,
+    anchor_date_month = as.Date('2019-01-01') + (monthly_counter - 1) * 30
+  )
+
+# Updated time periods with new date ranges
+time_periods <- tibble::tibble(
+  period = factor(c("Pre_period", "FFCRA", "Unwinding"), 
+                  levels = c("Pre_period", "FFCRA", "Unwinding")),
+  start = as.Date(c("2019-01-01", "2020-01-01", "2023-04-01")),
+  end   = as.Date(c("2019-12-31", "2023-03-31", "2023-08-31"))  # Note: You may need to adjust end date for Unwinding based on your data
+)
+
+# COVID period for sensitivity analysis (kept separate)
+covid_period <- tibble::tibble(
+  period = "COVID",
+  start = as.Date("2020-03-01"),  # Adjust this date as needed for your COVID period definition
+  end = as.Date("2020-12-31")     # Adjust this date as needed for your COVID period definition
+)
+
+period_rects <- time_periods %>%
+  select(start, end, period)
+
+# Get a date six months before end of FY23
+twelve_months_before <- as.Date("2024-08-31") %m-% months(12)
+
+cohort <- cohort %>%
+  mutate(
+    # Main period indicators
+    period_Pre = case_when(
+      anchor_date >= time_periods %>% filter(period == "Pre_period") %>% pull(start) &
+      anchor_date <= time_periods %>% filter(period == "Pre_period") %>% pull(end) ~ 1,
+      TRUE ~ 0
+    ),
+    period_FFCRA = case_when(
+      anchor_date >= time_periods %>% filter(period == "FFCRA") %>% pull(start) &
+      anchor_date <= time_periods %>% filter(period == "FFCRA") %>% pull(end) ~ 1,
+      TRUE ~ 0
+    ),
+    period_Unwinding = case_when(
+      anchor_date >= time_periods %>% filter(period == "Unwinding") %>% pull(start) &
+      anchor_date <= time_periods %>% filter(period == "Unwinding") %>% pull(end) ~ 1,
+      TRUE ~ 0
+    ),
+    # COVID period for sensitivity analysis
+    period_COVID = case_when(
+      anchor_date >= covid_period %>% pull(start) &
+      anchor_date <= covid_period %>% pull(end) ~ 1,
+      TRUE ~ 0
+    )
+  )
+
+
+```
+
+# Main Analysis Tables and Figures
+
+## Table 1
+
+```{r}
+sub.cohort <- 
+cohort %>% filter(htn_sample==1 | diab_sample==1)  %>%
+  filter(anchor_date <= twelve_months_before)
+```
+
+```{r}
+# Make long version
+long_subcohort <- sub.cohort %>%
+  mutate(id = row_number()) %>%
+  pivot_longer(cols = c(htn_sample, diab_sample), 
+               names_to = "group", 
+               values_to = "in_group") %>%
+  filter(in_group == 1)
+
+# Table by group 
+table_by_group <- long_subcohort %>%
+  mutate(group = recode(group,
+                        htn_sample = "Hypertension",
+                        diab_sample = "Diabetes")) %>%
+  select(group, outcome_type, anchor_year, race_desc, age_group, no_transfusion_weight) %>%
+  tbl_summary(by = group)
+
+# Overall
+table_overall <- sub.cohort %>%
+  select(outcome_type, anchor_year, race_desc,  age_group, no_transfusion_weight) %>%
+  tbl_summary()
+
+# Merge 
+merged_table <- tbl_merge(
+  tbls = list(table_overall, table_by_group),
+  tab_spanner = c("**Overall**", "**By Condition**")
+)
+
+
+merged_table %>%
+  as_flex_table() %>%
+  theme_box() %>%
+  padding(padding = 1.5) %>%
+  autofit() %>%
+  FitFlextableToPage()
+
+```
+
+```{r}
+htn.subgroup <- 
+  cohort %>% filter(htn_sample==1) %>%
+  filter(anchor_date <= twelve_months_before)
+```
+
+```{r}
+diab.subgroup <- 
+  cohort %>% 
+  filter(diab_sample==1) %>%
+  filter(anchor_date <= twelve_months_before)
+```
+
+{{< pagebreak >}}
+
+## Figure 1: Biweekly graphs based on anchor date: outpatient utilization 
+
+```{r}
+# Create combined dataset with subgroup labels
+visit.plots.subgroups <- bind_rows(
+  htn.subgroup %>%
+    group_by(anchor_date_twoweeks) %>%
+    summarise(
+      PE = mean(out_pe_12, na.rm = TRUE),
+      Preventive = mean(out_prev_12, na.rm = TRUE),
+      Contraceptive = mean(out_contr_12, na.rm = TRUE),
+      Mental_Health = mean(out_mental_12, na.rm = TRUE),
+      Other = mean(out_other_12, na.rm = TRUE),
+      Any_Outpatient = mean(out_any_outpatient_12, na.rm = TRUE),
+      .groups = 'drop'
+    ) %>%
+    mutate(subgroup = "Hypertension"),
+  
+  diab.subgroup %>%
+    group_by(anchor_date_twoweeks) %>%
+    summarise(
+      PE = mean(out_pe_12, na.rm = TRUE),
+      Preventive = mean(out_prev_12, na.rm = TRUE),
+      Contraceptive = mean(out_contr_12, na.rm = TRUE),
+      Mental_Health = mean(out_mental_12, na.rm = TRUE),
+      Other = mean(out_other_12, na.rm = TRUE),
+      Any_Outpatient = mean(out_any_outpatient_12, na.rm = TRUE),
+      .groups = 'drop'
+    ) %>%
+    mutate(subgroup = "Diabetes")
+) %>%
+  pivot_longer(
+    cols = c(PE, Preventive, Contraceptive, Mental_Health, Other, Any_Outpatient),
+    names_to = "visit_type",
+    values_to = "percentage"
+  ) %>%
+  mutate(
+    visit_type = factor(
+      visit_type,
+      levels = c("Any_Outpatient", "PE", "Preventive", "Contraceptive", "Mental_Health", "Other"),
+      labels = c("Any Outpatient", "Postpartum Evaluation", "Preventive", "Contraceptive", "Mental Health", "Other")
+    ),
+    subgroup = factor(subgroup, levels = c("Hypertension", "Diabetes"))
+  )
+```
+
+```{r}
+# Create the plot
+ggplot() +
+  geom_rect(
+    data = period_rects,
+    aes(xmin = start, xmax = end, ymin = 0, ymax = 1, fill = period),
+    alpha = 0.2
+  ) +
+  geom_line(
+    data = visit.plots.subgroups,
+    aes(x = anchor_date_twoweeks, y = percentage, color = visit_type),
+    linewidth = 1
+  ) +
+  scale_fill_manual(
+    name = "Time Period",
+    values = c(
+      "Pre_period" = "lightpink",
+      "FFCRA" = "steelblue",
+      "Unwinding" = "tan3"
+    )
+  ) +
+  scale_color_manual(
+    name = "Visit Type",
+    values = c(
+      "Any Outpatient" = "black",
+      "Postpartum Evaluation" = "#E31A1C",
+      "Preventive" = "#1F78B4",
+      "Contraceptive" = "#33A02C",
+      "Mental Health" = "#FF7F00",
+      "Other" = "#6A3D9A"
+    )
+  ) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  facet_wrap(~ subgroup, ncol = 2) +
+  labs(
+    title = "Outpatient Visit Types by Subgroup - 12 Months Post-Delivery",
+    x = "Date",
+    y = "% Episodes with Visits"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    strip.text = element_text(size = 12, face = "bold")
+  )
+```
+
+{{< pagebreak >}}
+
+## Figure 2: Biweekly graphs based on anchor date: diabetes screening
+
+```{r}
+
+# Get period starts
+period_starts <- time_periods %>%
+  select(date = start, period) %>%
+  arrange(date) %>%
+  mutate(period = factor(period, levels = period))
+
+# Diabetes screening graph
+diab.screening <- 
+diab.subgroup %>%
+  group_by(anchor_date_twoweeks) %>%
+  summarise(out_diab_screen_12 = mean(out_diab_screen_12)) %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = out_diab_screen_12)) +
+  geom_line(linewidth = 1) +
+  geom_vline(
+    data = period_starts,
+    aes(xintercept = date, color = period),
+    linetype = "dashed",
+    linewidth=.75
+  ) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  scale_color_brewer(palette = "Set2") +
+  labs(
+    title = "Diabetes Screening Rates 12 Months",
+    x = "Date",
+    y = "% Episode with Screening",
+    color = "Period Start"
+  ) +
+  theme_minimal()
+
+# Diabetes Visit graph
+diab.visit <- 
+diab.subgroup %>%
+  group_by(anchor_date_twoweeks) %>%
+  summarise(out_postpartum_12 = mean(out_postpartum_12)) %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = out_postpartum_12)) +
+  geom_line(linewidth = 1) +
+  geom_vline(
+    data = period_starts,
+    aes(xintercept = date, color = period),
+    linetype = "dashed",
+    linewidth=.75
+  ) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  scale_color_brewer(palette = "Set2") +
+  labs(
+    title = "Diabetes Subgroup Postpartum Visit 12 Months",
+    x = "Date",
+    y = "% Episodes with visit",
+    color = "Period Start"
+  ) +
+  theme_minimal()
+
+# HTN Visit graph
+htn.visit <- 
+htn.subgroup %>%
+  group_by(anchor_date_twoweeks) %>%
+  summarise(out_postpartum_12 = mean(out_postpartum_12)) %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = out_postpartum_12)) +
+  geom_line(linewidth = 1) +
+  geom_vline(
+    data = period_starts,
+    aes(xintercept = date, color = period),
+    linetype = "dashed",
+    linewidth=.75
+  ) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  scale_color_brewer(palette = "Set2") +
+  labs(
+    title = "Hypertension Subgroup Postpartum Visit 12 Months",
+    x = "Date",
+    y = "% Episodes with visit",
+    color = "Period Start"
+  ) +
+  theme_minimal()
+
+
+htn.med <- 
+htn.subgroup %>%
+  group_by(anchor_date_twoweeks) %>%
+  summarise(out_htn_med_12 = mean(out_htn_med_12)) %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = out_htn_med_12)) +
+  geom_line(linewidth = 1) +
+  geom_vline(
+    data = period_starts,
+    aes(xintercept = date, color = period),
+    linetype = "dashed",
+    linewidth=.75
+  ) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  scale_color_brewer(palette = "Set2") +
+  labs(
+    title = "Hypertension Subgroup Medication 12 Months",
+    x = "Date",
+    y = "% Episodes with medication",
+    color = "Period Start"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+diab.screening
+```
+
+{{< pagebreak >}}
+
+## Figure 3: Biweekly graphs based on anchor date: hypertensive medication
+
+```{r}
+htn.med
+```
+
+```{r fit-regressions}
+models <- list(
+  # Diabetes Screening
+  diab_screen_unadj = lm(out_diab_screen_12 ~ biweekly_counter + period_FFCRA + period_Unwinding +
+                           biweekly_counter:period_FFCRA + biweekly_counter:period_Unwinding,
+                         data = diab.subgroup),
+  diab_screen_adj   = lm(out_diab_screen_12 ~ biweekly_counter + period_FFCRA + period_Unwinding +
+                           biweekly_counter:period_FFCRA + biweekly_counter:period_Unwinding +
+                           age + no_transfusion_weight,
+                         data = diab.subgroup),
+  
+  # Diabetes Postpartum Visits
+  diab_postpartum_unadj = lm(out_postpartum_12 ~ biweekly_counter + period_FFCRA + period_Unwinding +
+                               biweekly_counter:period_FFCRA + biweekly_counter:period_Unwinding,
+                             data = diab.subgroup),
+  diab_postpartum_adj   = lm(out_postpartum_12 ~ biweekly_counter + period_FFCRA + period_Unwinding +
+                               biweekly_counter:period_FFCRA + biweekly_counter:period_Unwinding +
+                               age + no_transfusion_weight,
+                             data = diab.subgroup),
+  
+  # Diabetes Any Outpatient Visits
+  diab_any_outpatient_unadj = lm(out_any_outpatient_12 ~ biweekly_counter + period_FFCRA + period_Unwinding +
+                                   biweekly_counter:period_FFCRA + biweekly_counter:period_Unwinding,
+                                 data = diab.subgroup),
+  diab_any_outpatient_adj   = lm(out_any_outpatient_12 ~ biweekly_counter + period_FFCRA + period_Unwinding +
+                                   biweekly_counter:period_FFCRA + biweekly_counter:period_Unwinding +
+                                   age + no_transfusion_weight,
+                                 data = diab.subgroup),
+  
+  # HTN Medication
+  htn_med_unadj = lm(out_htn_med_12 ~ biweekly_counter + period_FFCRA + period_Unwinding +
+                       biweekly_counter:period_FFCRA + biweekly_counter:period_Unwinding,
+                     data = htn.subgroup),
+  htn_med_adj   = lm(out_htn_med_12 ~ biweekly_counter + period_FFCRA + period_Unwinding +
+                       biweekly_counter:period_FFCRA + biweekly_counter:period_Unwinding +
+                       age + no_transfusion_weight,
+                     data = htn.subgroup),
+  
+  # HTN Postpartum Visits
+  htn_postpartum_unadj = lm(out_postpartum_12 ~ biweekly_counter + period_FFCRA + period_Unwinding +
+                              biweekly_counter:period_FFCRA + biweekly_counter:period_Unwinding,
+                            data = htn.subgroup),
+  htn_postpartum_adj   = lm(out_postpartum_12 ~ biweekly_counter + period_FFCRA + period_Unwinding +
+                              biweekly_counter:period_FFCRA + biweekly_counter:period_Unwinding +
+                              age + no_transfusion_weight,
+                            data = htn.subgroup),
+  
+  # HTN Any Outpatient Visits
+  htn_any_outpatient_unadj = lm(out_any_outpatient_12 ~ biweekly_counter + period_FFCRA + period_Unwinding +
+                                  biweekly_counter:period_FFCRA + biweekly_counter:period_Unwinding,
+                                data = htn.subgroup),
+  htn_any_outpatient_adj   = lm(out_any_outpatient_12 ~ biweekly_counter + period_FFCRA + period_Unwinding +
+                                  biweekly_counter:period_FFCRA + biweekly_counter:period_Unwinding +
+                                  age + no_transfusion_weight,
+                                data = htn.subgroup)
+)
+```
+
+{{< pagebreak >}}
+
+## Table 2: ITS results of all utilization outcomes, adjusted, main coefficients only
+
+```{r}
+# helper to rename interaction rows only
+fix_interaction_labels <- function(tbl) {
+  tbl %>%
+    modify_table_body(~ .x %>%
+      dplyr::mutate(
+        label = dplyr::case_when(
+          variable == "biweekly_counter:period_FFCRA"     ~ "Trend Change, FFCRA",
+          variable == "biweekly_counter:period_Unwinding" ~ "Trend Change, Unwinding",
+          TRUE ~ label
+        )
+      )
+    )
+}
+
+# Common settings for formatting
+fmt_fun <- function(x) style_number(x, digits = 3)
+
+# Diabetes: Screening
+diab_screen_tbl <- tbl_regression(
+  models$diab_screen_adj,
+  include = c("biweekly_counter", "period_FFCRA", "period_Unwinding",
+              "biweekly_counter:period_FFCRA", "biweekly_counter:period_Unwinding"),
+  label = list(
+    biweekly_counter ~ "Pre-trend",
+    period_FFCRA ~ "Level Change, FFCRA",
+    `biweekly_counter:period_FFCRA` ~ "Trend Change, FFCRA",
+    period_Unwinding ~ "Level Change, Unwinding",
+    `biweekly_counter:period_Unwinding` ~ "Trend Change, Unwinding"
+  ),
+  estimate_fun = fmt_fun
+) %>%
+  modify_column_hide(p.value) %>%
+  modify_header(estimate ~ "**Diabetes Screening** Beta") %>%
+  fix_interaction_labels()
+
+# Diabetes: Any outpatient utilization
+diab_outpatient_tbl <- tbl_regression(
+  models$diab_any_outpatient_adj,
+  include = c("biweekly_counter", "period_FFCRA", "period_Unwinding",
+              "biweekly_counter:period_FFCRA", "biweekly_counter:period_Unwinding"),
+  label = list(
+    biweekly_counter ~ "Pre-trend",
+    period_FFCRA ~ "Level Change, FFCRA",
+    `biweekly_counter:period_FFCRA` ~ "Trend Change, FFCRA",
+    period_Unwinding ~ "Level Change, Unwinding",
+    `biweekly_counter:period_Unwinding` ~ "Trend Change, Unwinding"
+  ),
+  estimate_fun = fmt_fun
+) %>%
+  modify_column_hide(p.value) %>%
+  modify_header(estimate ~ "**Any outpatient utilization** Beta") %>%
+  fix_interaction_labels()
+
+# Hypertension: Medication
+htn_med_tbl <- tbl_regression(
+  models$htn_med_adj,
+  include = c("biweekly_counter", "period_FFCRA", "period_Unwinding",
+              "biweekly_counter:period_FFCRA", "biweekly_counter:period_Unwinding"),
+  label = list(
+    biweekly_counter ~ "Pre-trend",
+    period_FFCRA ~ "Level Change, FFCRA",
+    `biweekly_counter:period_FFCRA` ~ "Trend Change, FFCRA",
+    period_Unwinding ~ "Level Change, Unwinding",
+    `biweekly_counter:period_Unwinding` ~ "Trend Change, Unwinding"
+  ),
+  estimate_fun = fmt_fun
+) %>%
+  modify_column_hide(p.value) %>%
+  modify_header(estimate ~ "**Antihypertensive medication** Beta") %>%
+  fix_interaction_labels()
+
+# Hypertension: Any outpatient utilization
+htn_outpatient_tbl <- tbl_regression(
+  models$htn_any_outpatient_adj,
+  include = c("biweekly_counter", "period_FFCRA", "period_Unwinding",
+              "biweekly_counter:period_FFCRA", "biweekly_counter:period_Unwinding"),
+  label = list(
+    biweekly_counter ~ "Pre-trend",
+    period_FFCRA ~ "Level Change, FFCRA",
+    `biweekly_counter:period_FFCRA` ~ "Trend Change, FFCRA",
+    period_Unwinding ~ "Level Change, Unwinding",
+    `biweekly_counter:period_Unwinding` ~ "Trend Change, Unwinding"
+  ),
+  estimate_fun = fmt_fun
+) %>%
+  modify_column_hide(p.value) %>%
+  modify_header(estimate ~ "**Any outpatient utilization** Beta") %>%
+  fix_interaction_labels()
+
+# Merge within cohort (unchanged)
+diabetes_merged <- tbl_merge(
+  list(diab_screen_tbl, diab_outpatient_tbl),
+  tab_spanner = c("**Diabetes cohort**", "**Diabetes cohort**")
+) %>%
+  modify_spanning_header(everything() ~ "**Diabetes cohort**")
+
+htn_merged <- tbl_merge(
+  list(htn_med_tbl, htn_outpatient_tbl),
+  tab_spanner = c("**Hypertension cohort**", "**Hypertension cohort**")
+) %>%
+  modify_spanning_header(everything() ~ "**Hypertension cohort**")
+
+
+
+```
+
+```{r}
+diabetes_merged %>% as_flex_table()%>% FitFlextableToPage()
+```
+
+
+```{r}
+htn_merged %>% as_flex_table() %>% FitFlextableToPage()
+```
+
+{{< pagebreak >}}
+
+# Supplemental Figures
+
+## Flowchart
+
+```{r}
+library(DiagrammeR)
+library(DiagrammeRsvg)
+library(webshot)
+library(dplyr)
+
+# Updated cohort with me_code filter
+final_cohort <- cohort
+
+# Count cohort steps
+n0 <- nrow(episodes)
+n1 <- episodes %>% filter(age >= 19 & age <= 55) %>% nrow()
+n2 <- episodes %>% filter(age >= 19 & age <= 55, enrolled_birth == 1) %>% nrow()
+n3 <- episodes %>% filter(age >= 19 & age <= 55, enrolled_birth == 1, state_tx == "TX") %>% nrow()
+n4 <- episodes %>% filter(age >= 19 & age <= 55, enrolled_birth == 1, state_tx == "TX", los <= 60) %>% nrow()
+n5 <- nrow(final_cohort)
+n5_diab <- final_cohort %>% filter(diab_sample == 1) %>% nrow()
+n5_htn  <- final_cohort %>% filter(htn_sample == 1) %>% nrow()
+
+# Create and export the updated diagram
+svg_code <- export_svg(
+  grViz(sprintf("
+    digraph cohort_flow {
+      graph [layout = dot, rankdir = TB]
+      node [shape = box, style = filled, fillcolor = LightGray, fontname = Helvetica, width = 3]
+
+      A [label = 'Initial episodes\\n(n = %d)']
+      B [label = 'Aged 19-55\\n(n = %d)']
+      C [label = 'Enrolled at birth\\n(n = %d)']
+      D [label = 'Texas residents\\n(n = %d)']
+      E [label = 'LOS <= 60 days\\n(n = %d)']
+      F [label = 'Enrollment filters\\n(n = %d)']
+      G [label = 'Diabetes sample\\n(n = %d)']
+      H [label = 'Hypertension sample\\n(n = %d)']
+
+      A -> B -> C -> D -> E -> F
+      F -> G
+      F -> H
+    }
+  ", n0, n1, n2, n3, n4, n5, n5_diab, n5_htn))
+)
+
+# Save the SVG to file
+writeLines(svg_code, "flowchart.svg")
+
+# Convert the SVG to PNG
+webshot::webshot("flowchart.svg", file = "flowchart.png", vwidth = 1000, vheight = 900)
+```
+
+{{< pagebreak >}}
+
+## Enrollment
+
+```{r}
+# Create combined dataset with subgroup labels - split between groups
+enrollment.subgroups <- bind_rows(
+  htn.subgroup %>%
+    group_by(anchor_date_twoweeks) %>%
+    summarise(
+      enrollment = mean(out_enroll_12, na.rm = TRUE),
+      .groups = 'drop'
+    ) %>%
+    mutate(subgroup = "Hypertension"),
+  
+  diab.subgroup %>%
+    group_by(anchor_date_twoweeks) %>%
+    summarise(
+      enrollment = mean(out_enroll_12, na.rm = TRUE),
+      .groups = 'drop'
+    ) %>%
+    mutate(subgroup = "Diabetes")
+)
+
+enrollment.subgroups %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = enrollment)) +
+  geom_line(linewidth = 1) +
+  geom_vline(
+    data = period_starts,
+    aes(xintercept = date, color = period),
+    linetype = "dashed",
+    linewidth=.75
+  ) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  scale_color_brewer(palette = "Set2") +
+  facet_wrap(~ subgroup, ncol = 2) +
+  labs(
+    title = "Enrollment Rates 12 Months Later",
+    x = "Date",
+    y = "% Episode with Screening",
+    color = "Period Start"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    strip.text = element_text(size = 12, face = "bold")
+  )
+```
+
+{{< pagebreak >}}
+
+## Average Visits per Person
+
+```{r}
+# Create combined dataset with subgroup labels - Average number of visits
+visit.counts.subgroups <- bind_rows(
+  htn.subgroup %>%
+    group_by(anchor_date_twoweeks) %>%
+    summarise(
+      PE = mean(pe_visit_days_12, na.rm = TRUE),
+      Preventive = mean(prev_visit_days_12, na.rm = TRUE),
+      Contraceptive = mean(contr_visit_days_12, na.rm = TRUE),
+      Mental_Health = mean(mental_visit_days_12, na.rm = TRUE),
+      Other = mean(other_visit_days_12, na.rm = TRUE),
+      Any_Outpatient = mean(total_visit_days_12, na.rm = TRUE),
+      .groups = 'drop'
+    ) %>%
+    mutate(subgroup = "Hypertension"),
+  
+  diab.subgroup %>%
+    group_by(anchor_date_twoweeks) %>%
+    summarise(
+      PE = mean(pe_visit_days_12, na.rm = TRUE),
+      Preventive = mean(prev_visit_days_12, na.rm = TRUE),
+      Contraceptive = mean(contr_visit_days_12, na.rm = TRUE),
+      Mental_Health = mean(mental_visit_days_12, na.rm = TRUE),
+      Other = mean(other_visit_days_12, na.rm = TRUE),
+      Any_Outpatient = mean(total_visit_days_12, na.rm = TRUE),
+      .groups = 'drop'
+    ) %>%
+    mutate(subgroup = "Diabetes")
+) %>%
+  pivot_longer(
+    cols = c(PE, Preventive, Contraceptive, Mental_Health, Other, Any_Outpatient),
+    names_to = "visit_type",
+    values_to = "avg_visits"
+  ) %>%
+  mutate(
+    visit_type = factor(
+      visit_type,
+      levels = c("Any_Outpatient", "PE", "Preventive", "Contraceptive", "Mental_Health", "Other"),
+      labels = c("Any Outpatient", "Postpartum Evaluation", "Preventive", "Contraceptive", "Mental Health", "Other")
+    ),
+    subgroup = factor(subgroup, levels = c("Hypertension", "Diabetes"))
+  )
+
+# Create the plot for average number of visits
+ggplot() +
+  geom_rect(
+    data = period_rects,
+    aes(xmin = start, xmax = end, ymin = 0, ymax = Inf, fill = period),
+    alpha = 0.2
+  ) +
+  geom_line(
+    data = visit.counts.subgroups,
+    aes(x = anchor_date_twoweeks, y = avg_visits, color = visit_type),
+    linewidth = 1
+  ) +
+  scale_fill_manual(
+    name = "Time Period",
+    values = c(
+      "Pre_period" = "lightpink",
+      "FFCRA" = "steelblue",
+      "Unwinding" = "tan3"
+    )
+  ) +
+  scale_color_manual(
+    name = "Visit Type",
+    values = c(
+      "Any Outpatient" = "black",
+      "Postpartum Evaluation" = "#E31A1C",
+      "Preventive" = "#1F78B4",
+      "Contraceptive" = "#33A02C",
+      "Mental Health" = "#FF7F00",
+      "Other" = "#6A3D9A"
+    )
+  ) +
+  scale_y_continuous(limits = c(0, NA)) +
+  facet_wrap(~ subgroup, ncol = 2) +
+  labs(
+    title = "Average Number of Outpatient Visits by Subgroup - 12 Months Post-Delivery",
+    x = "Date",
+    y = "Average Number of Visits"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    strip.text = element_text(size = 12, face = "bold")
+  )
+```
+
+{{< pagebreak >}}
+
+# Supplemental Tables
+
+## Full ITS Results
+
+### Diabetes Screening
+
+Unadjusted
+
+```{r}
+tbl_regression(models$diab_screen_unadj,
+  intercept = TRUE,
+  pvalue_fun = ~ style_pvalue(.x, digits = 2),
+  estimate_fun = ~ style_number(.x, digits = 4)
+) 
+```
+
+Adjusted
+
+```{r}
+
+tbl_regression(models$diab_screen_adj,
+  intercept = TRUE,
+  pvalue_fun = ~ style_pvalue(.x, digits = 2),
+  estimate_fun = ~ style_number(.x, digits = 4)
+) 
+
+```
+
+### Diabetes Outpatient
+
+Unadjusted
+
+```{r}
+tbl_regression(models$diab_any_outpatient_unadj,
+  intercept = TRUE,
+  pvalue_fun = ~ style_pvalue(.x, digits = 2),
+  estimate_fun = ~ style_number(.x, digits = 4)
+) 
+```
+
+Adjusted
+
+```{r}
+
+tbl_regression(models$diab_any_outpatient_adj,
+  intercept = TRUE,
+  pvalue_fun = ~ style_pvalue(.x, digits = 2),
+  estimate_fun = ~ style_number(.x, digits = 4)
+) 
+
+```
+
+{{< pagebreak >}}
+
+### HTN Medication
+
+Unadjusted
+
+```{r}
+tbl_regression(models$htn_med_unadj,
+  intercept = TRUE,
+  pvalue_fun = ~ style_pvalue(.x, digits = 2),
+  estimate_fun = ~ style_number(.x, digits = 4)
+)
+
+```
+
+Adjusted
+
+```{r}
+tbl_regression(models$htn_med_adj,
+  intercept = TRUE,
+  pvalue_fun = ~ style_pvalue(.x, digits = 2),
+  estimate_fun = ~ style_number(.x, digits = 4)
+)
+```
+
+{{< pagebreak >}}
+
+### HTN Outpatient
+
+Unadjusted
+
+```{r}
+tbl_regression(models$htn_any_outpatient_unadj,
+  intercept = TRUE,
+  pvalue_fun = ~ style_pvalue(.x, digits = 2),
+  estimate_fun = ~ style_number(.x, digits = 4)
+) 
+```
+
+Adjusted
+
+```{r}
+
+tbl_regression(models$htn_any_outpatient_adj,
+  intercept = TRUE,
+  pvalue_fun = ~ style_pvalue(.x, digits = 2),
+  estimate_fun = ~ style_number(.x, digits = 4)
+) 
+
+```
+
+{{< pagebreak >}}
+
+## HEDIS Postpartum Visits
+
+### Diabetes Postpartum Visits
+
+Unadjusted
+
+```{r}
+tbl_regression(models$diab_postpartum_unadj,
+  intercept = TRUE,
+  pvalue_fun = ~ style_pvalue(.x, digits = 2),
+  estimate_fun = ~ style_number(.x, digits = 4)
+) 
+
+```
+
+Adjusted
+
+```{r}
+
+tbl_regression(models$diab_postpartum_adj,
+  intercept = TRUE,
+  pvalue_fun = ~ style_pvalue(.x, digits = 2),
+  estimate_fun = ~ style_number(.x, digits = 4)
+)
+
+```
+
+### HTN Postpartum Visits
+
+Unadjusted
+
+```{r}
+tbl_regression(models$htn_postpartum_unadj,
+  intercept = TRUE,
+  pvalue_fun = ~ style_pvalue(.x, digits = 2),
+  estimate_fun = ~ style_number(.x, digits = 4)
+)
+
+```
+
+Adjusted
+
+```{r}
+
+tbl_regression(models$htn_postpartum_adj,
+  intercept = TRUE,
+  pvalue_fun = ~ style_pvalue(.x, digits = 2),
+  estimate_fun = ~ style_number(.x, digits = 4)
+)
+
+```
+
+{{< pagebreak >}}
+
+# Sensitivity Analyses
+
+```{r}
+# Table stuff
+mk_tbl <- function(fit) {
+  tbl_regression(
+    fit,
+    intercept    = TRUE,
+    pvalue_fun   = ~ style_pvalue(.x, digits = 3),
+    estimate_fun = ~ style_number(.x, digits = 3),
+    conf.int     = FALSE
+  ) |>
+    add_significance_stars(hide_p = TRUE, pattern = "{estimate}{stars}") |>
+    modify_column_hide(columns = c(std.error))
+}
+
+compare_models <- function(model_names, spanners) {
+  tbls <- lapply(model_names, function(nm) mk_tbl(models[[nm]]))
+  tbl_merge(tbls = tbls, tab_spanner = spanners)
+}
+```
+
+## Diabetes Subgroup Exclude Pre-existing
+
+### Graph
+
+```{r}
+# Diabetes screening graph
+
+diab.subgroup %>%
+  group_by(anchor_date_twoweeks, pre_existing_diab) %>%
+  summarise(out_diab_screen_12 = mean(out_diab_screen_12)) %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = out_diab_screen_12, color=as.factor(pre_existing_diab))) +
+  geom_line(linewidth = 1) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  labs(
+    title = "Diabetes Screening Rates 12 Months (Pre-Existing Comparison)",
+    x = "Date",
+    y = "% Episode with Screening",
+  ) +
+  theme_minimal()
+```
+
+### Models
+
+```{r}
+# 1) Restricted data (exclude pre-existing diabetes)
+diab.subgroup_nopre <- dplyr::filter(diab.subgroup, pre_existing_diab == 0)
+
+# 2) Refit ONLY the restricted models, using the *exact same formulas* as originals
+fml_unadj <- formula(models$diab_screen_unadj)
+fml_adj   <- formula(models$diab_screen_adj)
+
+models$diab_screen_unadj_nopre <- lm(fml_unadj, data = diab.subgroup_nopre)
+models$diab_screen_adj_nopre   <- lm(fml_adj,   data = diab.subgroup_nopre)
+
+```
+
+### Diabetes Screening Unadjusted
+
+```{r}
+compare_models(
+  c("diab_screen_unadj", "diab_screen_unadj_nopre"),
+  c("Full Sample", "Excluding Pre-Existing Diabetes")
+) |>
+  as_flex_table() |>
+  FitFlextableToPage()
+```
+
+### Diabetes Screening Adjusted
+
+```{r}
+compare_models(
+  c("diab_screen_adj", "diab_screen_adj_nopre"),
+  c("Full Sample", "Excluding Pre-Existing Diabetes")
+) |>
+  as_flex_table() |>
+  FitFlextableToPage()
+```
+
+{{< pagebreak >}}
+
+## Diabetes Subgroup Test Type Graphs
+
+```{r}
+
+# Summarize rates by two-week anchor date and plot
+summary_time <- bind_rows(
+  diab.subgroup %>%
+    filter(!is.na(anchor_date_twoweeks)) %>%
+    group_by(anchor_date_twoweeks) %>%
+    summarise(test = "HbA1c (12m)",
+              rate = mean(out_diab_screen_hba1c_12, na.rm = TRUE),
+              n = sum(!is.na(out_diab_screen_hba1c_12)),
+              .groups = "drop"),
+  diab.subgroup %>%
+    filter(!is.na(anchor_date_twoweeks)) %>%
+    group_by(anchor_date_twoweeks) %>%
+    summarise(test = "GTT (12m)",
+              rate = mean(out_diab_screen_gtt_12, na.rm = TRUE),
+              n = sum(!is.na(out_diab_screen_gtt_12)),
+              .groups = "drop")
+)
+
+ggplot(summary_time, aes(x = anchor_date_twoweeks, y = rate, color = test)) +
+  geom_line(size=1) +
+  scale_y_continuous(breaks = seq(0, 1, 0.1),
+                     labels = function(x) paste0(round(100 * x), "%")) +
+  labs(x = NULL, y = "12-month test rate",
+       title = "12-month Screening Rates Over Time",
+       color = NULL) +
+  theme_minimal(base_size = 12)
+
+
+```
+
+{{< pagebreak >}}
+
+### Diabetes Test Type Models
+
+```{r}
+# 1) derive RHS from your stored overall models (keeps Unwinding + interactions identical)
+rhs_unadj <- paste(attr(terms(models$diab_screen_unadj), "term.labels"), collapse = " + ")
+rhs_adj   <- paste(attr(terms(models$diab_screen_adj),   "term.labels"), collapse = " + ")
+
+# 2) build formulas for test-type outcomes using that RHS
+fml_hba1c_unadj <- as.formula(paste("out_diab_screen_hba1c_12 ~", rhs_unadj))
+fml_hba1c_adj   <- as.formula(paste("out_diab_screen_hba1c_12 ~", rhs_adj))
+fml_gtt_unadj   <- as.formula(paste("out_diab_screen_gtt_12 ~",   rhs_unadj))
+fml_gtt_adj     <- as.formula(paste("out_diab_screen_gtt_12 ~",   rhs_adj))
+
+# 3) fit ONCE and store (no refit of originals)
+models$diab_hba1c_unadj <- lm(fml_hba1c_unadj, data = diab.subgroup)
+models$diab_hba1c_adj   <- lm(fml_hba1c_adj,   data = diab.subgroup)
+models$diab_gtt_unadj   <- lm(fml_gtt_unadj,   data = diab.subgroup)
+models$diab_gtt_adj     <- lm(fml_gtt_adj,     data = diab.subgroup)
+
+# 4) combined table using your helpers
+nm  <- c("diab_screen_unadj","diab_screen_adj",
+         "diab_hba1c_unadj","diab_hba1c_adj",
+         "diab_gtt_unadj","diab_gtt_adj")
+lbl <- c("Overall (Unadj)","Overall (Adj)",
+         "HbA1c (Unadj)","HbA1c (Adj)",
+         "GTT (Unadj)","GTT (Adj)")
+
+compare_models(nm, lbl) |>
+  as_flex_table() |>
+  FitFlextableToPage()
+
+```
+
+{{< pagebreak >}}
+
+## Excluding COVID
+
+```{r}
+
+exclude_start <- as.Date("2019-03-18")
+exclude_end   <- as.Date("2020-04-17")
+exclude_days  <- as.integer(exclude_end - exclude_start + 1L)
+origin        <- as.Date("2019-01-01")
+
+diab.subgroup_excluded <- diab.subgroup %>%
+  filter(!(anchor_date >= exclude_start & anchor_date <= exclude_end)) %>%
+  mutate(
+    biweekly_counter = as.integer(
+      (as.integer(anchor_date - origin) - if_else(anchor_date > exclude_end, exclude_days, 0L)) / 14
+    ) + 1,
+    anchor_date_twoweeks = origin + (biweekly_counter - 1) * 14
+  )
+
+htn.subgroup_excluded <- htn.subgroup %>%
+  filter(!(anchor_date >= exclude_start & anchor_date <= exclude_end)) %>%
+  mutate(
+    biweekly_counter = as.integer(
+      (as.integer(anchor_date - origin) - if_else(anchor_date > exclude_end, exclude_days, 0L)) / 14
+    ) + 1,
+    anchor_date_twoweeks = origin + (biweekly_counter - 1) * 14
+  )
+
+# Get RHS from existing models (no need to modify since we're not changing period variables)
+rhs_unadj_excl <- paste(attr(terms(models$diab_screen_unadj), "term.labels"), collapse = " + ")
+rhs_adj_excl   <- paste(attr(terms(models$diab_screen_adj),   "term.labels"), collapse = " + ")
+
+fit_excluded_reindexed <- function(base_label, outcome, data, adjusted = FALSE) {
+  rhs <- if (adjusted) rhs_adj_excl else rhs_unadj_excl
+  fml <- as.formula(paste(outcome, "~", rhs))
+  nm  <- paste0(base_label, if (adjusted) "_adj_excluded_reidx" else "_unadj_excluded_reidx")
+  models[[nm]] <<- lm(fml, data = data)
+  nm
+}
+
+# Diabetes cohort
+fit_excluded_reindexed("diab_screen",        "out_diab_screen_12",     diab.subgroup_excluded, adjusted = FALSE)
+fit_excluded_reindexed("diab_screen",        "out_diab_screen_12",     diab.subgroup_excluded, adjusted = TRUE)
+fit_excluded_reindexed("diab_any_outpatient", "out_any_outpatient_12", diab.subgroup_excluded, adjusted = FALSE)
+fit_excluded_reindexed("diab_any_outpatient", "out_any_outpatient_12", diab.subgroup_excluded, adjusted = TRUE)
+
+# HTN cohort
+fit_excluded_reindexed("htn_med",            "out_htn_med_12",         htn.subgroup_excluded,  adjusted = FALSE)
+fit_excluded_reindexed("htn_med",            "out_htn_med_12",         htn.subgroup_excluded,  adjusted = TRUE)
+fit_excluded_reindexed("htn_any_outpatient", "out_any_outpatient_12",  htn.subgroup_excluded,  adjusted = FALSE)
+fit_excluded_reindexed("htn_any_outpatient", "out_any_outpatient_12",  htn.subgroup_excluded,  adjusted = TRUE)
+
+```
+
+```{r}
+compare_models(
+  c("diab_screen_unadj", "diab_screen_unadj_excluded_reidx",
+    "diab_screen_adj",   "diab_screen_adj_excluded_reidx"),
+  c("Original - Unadj",  "Excluded COVID - Unadj",
+    "Original - Adj",    "Excluded COVID - Adj")
+) |> as_flex_table() |> FitFlextableToPage()
+
+```
+
+```{r}
+compare_models(
+  c("diab_any_outpatient_unadj", "diab_any_outpatient_unadj_excluded_reidx",
+    "diab_any_outpatient_adj",   "diab_any_outpatient_adj_excluded_reidx"),
+  c("Original - Unadj",          "Excluded COVID - Unadj",
+    "Original - Adj",            "Excluded COVID - Adj")
+) |> as_flex_table() |> FitFlextableToPage()
+
+
+```
+
+```{r}
+compare_models(
+  c("htn_med_unadj", "htn_med_unadj_excluded_reidx",
+    "htn_med_adj",   "htn_med_adj_excluded_reidx"),
+  c("Original - Unadj", "Excluded COVID - Unadj",
+    "Original - Adj",   "Excluded COVID - Adj")
+) |> as_flex_table() |> FitFlextableToPage()
+
+
+```
+
+```{r}
+compare_models(
+  c("htn_any_outpatient_unadj", "htn_any_outpatient_unadj_excluded_reidx",
+    "htn_any_outpatient_adj",   "htn_any_outpatient_adj_excluded_reidx"),
+  c("Original - Unadj",         "Excluded COVID - Unadj",
+    "Original - Adj",           "Excluded COVID - Adj")
+) |> as_flex_table() |> FitFlextableToPage()
+```
+

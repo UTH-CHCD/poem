@@ -88,23 +88,23 @@ GROUP BY a.client_nbr, a.ep_num;
  * 90 Days begins the day AFTER the anchor day
  */ -----------------------------------------------------
 
-
 DROP TABLE IF EXISTS CHCDWORK.dbo.poem_outcomes_enrollment;
 
-SELECT 
+SELECT  distinct 
     c.client_nbr,
     c.ep_num,
-    CASE 
-        WHEN d.client_nbr IS NOT NULL THEN 1
-        ELSE 0
-    END AS out_enroll_90
+    CASE WHEN d90.client_nbr IS NOT NULL THEN 1 ELSE 0 END AS out_enroll_90,
+    CASE WHEN d12.client_nbr IS NOT NULL THEN 1 ELSE 0 END AS out_enroll_12
 INTO CHCDWORK.dbo.poem_outcomes_enrollment
 FROM chcdwork.dbo.poem_cohort c
-LEFT JOIN chcdwork.dbo.poem_demographics d
-    ON c.client_nbr = d.client_nbr
-    AND YEAR(d.elig_month) = YEAR(DATEADD(day, 91, c.anchor_date))
-    AND MONTH(d.elig_month) = MONTH(DATEADD(day, 91, c.anchor_date));
-   
+LEFT JOIN chcdwork.dbo.poem_demographics AS d90
+    ON d90.client_nbr = c.client_nbr
+   AND YEAR(d90.elig_month)  = YEAR(DATEADD(DAY, 91, c.anchor_date))
+   AND MONTH(d90.elig_month) = MONTH(DATEADD(DAY, 91, c.anchor_date))
+LEFT JOIN chcdwork.dbo.poem_demographics AS d12
+    ON d12.client_nbr = c.client_nbr
+   AND YEAR(d12.elig_month)  = YEAR(DATEADD(YEAR, 1, DATEADD(DAY, 1, c.anchor_date)))
+   AND MONTH(d12.elig_month) = MONTH(DATEADD(YEAR, 1, DATEADD(DAY, 1, c.anchor_date)));
    
 /* ----------------------------------
  * Preventitive/E&M Visits 
@@ -546,7 +546,7 @@ GROUP BY client_nbr, ep_num;
 
 
 --- Create a simplified table with 0/1 outcomes for each test type (6-month version only)
-DROP TABLE IF EXISTS CHCDWORK.dbo.poem_outcomes_out_diab_screen_by_type_6mo;
+DROP TABLE IF EXISTS CHCDWORK.dbo.poem_outcomes_out_diab_screen_by_type_6_12mo;
 
 -- Pivot the data to have HbA1c and GTT as separate columns for both 6- and 12-month outcomes
 SELECT 
