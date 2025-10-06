@@ -90,7 +90,7 @@ GROUP BY a.client_nbr, a.ep_num;
 
 DROP TABLE IF EXISTS CHCDWORK.dbo.poem_outcomes_enrollment;
 
-SELECT  distinct 
+SELECT DISTINCT 
     c.client_nbr,
     c.ep_num,
     CASE WHEN d90.client_nbr IS NOT NULL THEN 1 ELSE 0 END AS out_enroll_90,
@@ -99,13 +99,167 @@ INTO CHCDWORK.dbo.poem_outcomes_enrollment
 FROM chcdwork.dbo.poem_cohort c
 LEFT JOIN chcdwork.dbo.poem_demographics AS d90
     ON d90.client_nbr = c.client_nbr
-   AND YEAR(d90.elig_month)  = YEAR(DATEADD(DAY, 91, c.anchor_date))
-   AND MONTH(d90.elig_month) = MONTH(DATEADD(DAY, 91, c.anchor_date))
+   AND d90.elig_month = DATEFROMPARTS(YEAR(DATEADD(DAY, 91, c.anchor_date)), 
+                                      MONTH(DATEADD(DAY, 91, c.anchor_date)), 1)
 LEFT JOIN chcdwork.dbo.poem_demographics AS d12
     ON d12.client_nbr = c.client_nbr
-   AND YEAR(d12.elig_month)  = YEAR(DATEADD(YEAR, 1, DATEADD(DAY, 1, c.anchor_date)))
-   AND MONTH(d12.elig_month) = MONTH(DATEADD(YEAR, 1, DATEADD(DAY, 1, c.anchor_date)));
+   AND d12.elig_month = DATEFROMPARTS(YEAR(DATEADD(YEAR, 1, c.anchor_date)), 
+                                      MONTH(DATEADD(YEAR, 1, c.anchor_date)), 1);
    
+                                     
+--- CE After          
+drop table if exists CHCDWORK.dbo.poem_outcomes_ce_after;
+                                     
+WITH enrollment_months AS (
+    SELECT DISTINCT
+        c.client_nbr,
+        c.ep_num,
+        c.anchor_date,
+        DATEDIFF(MONTH, 
+                 DATEFROMPARTS(YEAR(c.anchor_date), MONTH(c.anchor_date), 1), 
+                 d.elig_month) AS months_from_anchor
+    FROM chcdwork.dbo.poem_cohort c
+    INNER JOIN chcdwork.dbo.poem_demographics d
+        ON d.client_nbr = c.client_nbr
+       AND d.elig_month >= DATEFROMPARTS(YEAR(c.anchor_date), MONTH(c.anchor_date), 1)
+),
+with_next AS (
+    SELECT 
+        client_nbr,
+        ep_num, 
+        anchor_date,
+        months_from_anchor,
+        LEAD(months_from_anchor) OVER (PARTITION BY client_nbr, ep_num ORDER BY months_from_anchor) AS next_month
+    FROM enrollment_months
+),
+gap_detection AS (
+    SELECT 
+        client_nbr,
+        ep_num,
+        anchor_date,
+        months_from_anchor,
+        next_month,
+        CASE WHEN next_month - months_from_anchor > 1 THEN 1 ELSE 0 END AS has_gap_after
+    FROM with_next
+)
+SELECT 
+    client_nbr,
+    ep_num,
+    anchor_date,
+    CASE 
+        WHEN MIN(months_from_anchor) > 0 THEN 0  -- Didn't start at anchor month
+        ELSE COALESCE(MIN(CASE WHEN has_gap_after = 1 THEN months_from_anchor + 1 END), 
+                      MAX(months_from_anchor) + 1)  -- No gaps found, all continuous
+    END AS ce_after
+into CHCDWORK.dbo.poem_outcomes_ce_after
+FROM gap_detection
+GROUP BY client_nbr, ep_num, anchor_date;
+
+--- CE Before
+drop table if exists CHCDWORK.dbo.poem_outcomes_ce_before; 
+
+WITH enrollment_months AS (
+    SELECT DISTINCT
+        c.client_nbr,
+        c.ep_num,
+        c.anchor_date,
+        DATEDIFF(MONTH, 
+                 d.elig_month,
+                 DATEFROMPARTS(YEAR(c.anchor_date), MONTH(c.anchor_date), 1)) AS months_before_anchor
+    FROM chcdwork.dbo.poem_cohort c
+    INNER JOIN chcdwork.dbo.poem_demographics d
+        ON d.client_nbr = c.client_nbr
+       AND d.elig_month < DATEFROMPARTS(YEAR(c.anchor_date), MONTH(c.anchor_date), 1)
+),
+with_next AS (
+    SELECT 
+        client_nbr,
+        ep_num, 
+        anchor_date,
+        months_before_anchor,
+        LEAD(months_before_anchor) OVER (PARTITION BY client_nbr, ep_num ORDER BY months_before_anchor DESC) AS next_month
+    FROM enrollment_months
+),
+gap_detection AS (
+    SELECT 
+        client_nbr,
+        ep_num,
+        anchor_date,
+        months_before_anchor,
+        next_month,
+        CASE WHEN months_before_anchor - next_month > 1 THEN 1 ELSE 0 END AS has_gap_after
+    FROM with_next
+)
+SELECT 
+    client_nbr,
+    ep_num,
+    anchor_date,
+    CASE 
+        WHEN MIN(months_before_anchor) > 1 THEN 0  -- Didn't have enrollment in month before anchor
+        ELSE COALESCE(MIN(CASE WHEN has_gap_after = 1 THEN months_before_anchor - 1 END), 
+                      MAX(months_before_anchor))  -- No gaps found, all continuous
+    END AS ce_before
+into CHCDWORK.dbo.poem_outcomes_ce_before
+FROM gap_detection
+GROUP BY client_nbr, ep_num, anchor_date;
+
+
+-- Total months before anchor
+DROP TABLE IF EXISTS CHCDWORK.dbo.poem_outcomes_total_before;
+
+SELECT 
+    c.client_nbr,
+    c.ep_num,
+    c.anchor_date,
+    COUNT(DISTINCT d.elig_month) AS total_months_before
+INTO CHCDWORK.dbo.poem_outcomes_total_before
+FROM chcdwork.dbo.poem_cohort c
+LEFT JOIN chcdwork.dbo.poem_demographics d
+    ON d.client_nbr = c.client_nbr
+   AND d.elig_month < DATEFROMPARTS(YEAR(c.anchor_date), MONTH(c.anchor_date), 1)
+GROUP BY c.client_nbr, c.ep_num, c.anchor_date;
+
+-- Total months after anchor (including anchor month)
+DROP TABLE IF EXISTS CHCDWORK.dbo.poem_outcomes_total_after;
+
+SELECT 
+    c.client_nbr,
+    c.ep_num,
+    c.anchor_date,
+    COUNT(DISTINCT d.elig_month) AS total_months_after
+INTO CHCDWORK.dbo.poem_outcomes_total_after
+FROM chcdwork.dbo.poem_cohort c
+LEFT JOIN chcdwork.dbo.poem_demographics d
+    ON d.client_nbr = c.client_nbr
+   AND d.elig_month >= DATEFROMPARTS(YEAR(c.anchor_date), MONTH(c.anchor_date), 1)
+GROUP BY c.client_nbr, c.ep_num, c.anchor_date;
+
+-- Combine all enrollment metrics
+DROP TABLE IF EXISTS CHCDWORK.dbo.poem_outcomes_enroll;
+
+SELECT 
+    c.client_nbr,
+    c.ep_num,
+    COALESCE(e.out_enroll_90, 0) AS out_enroll_90,
+    COALESCE(e.out_enroll_12, 0) AS out_enroll_12,
+    COALESCE(ca.ce_after, 0) AS ce_after,
+    COALESCE(cb.ce_before, 0) AS ce_before,
+    COALESCE(ta.total_months_after, 0) AS total_months_after,
+    COALESCE(tb.total_months_before, 0) AS total_months_before
+INTO CHCDWORK.dbo.poem_outcomes_enroll
+FROM chcdwork.dbo.poem_cohort c
+LEFT JOIN CHCDWORK.dbo.poem_outcomes_enrollment e
+    ON e.client_nbr = c.client_nbr AND e.ep_num = c.ep_num
+LEFT JOIN CHCDWORK.dbo.poem_outcomes_ce_after ca
+    ON ca.client_nbr = c.client_nbr AND ca.ep_num = c.ep_num
+LEFT JOIN CHCDWORK.dbo.poem_outcomes_ce_before cb
+    ON cb.client_nbr = c.client_nbr AND cb.ep_num = c.ep_num
+LEFT JOIN CHCDWORK.dbo.poem_outcomes_total_after ta
+    ON ta.client_nbr = c.client_nbr AND ta.ep_num = c.ep_num
+LEFT JOIN CHCDWORK.dbo.poem_outcomes_total_before tb
+    ON tb.client_nbr = c.client_nbr AND tb.ep_num = c.ep_num;
+   
+
 /* ----------------------------------
  * Preventitive/E&M Visits 
  * -----------------------------------*/

@@ -35,7 +35,12 @@ SELECT DISTINCT
     total_claims_12,
     smm_weight, 
     no_transfusion_weight,
-    enroll.out_enroll_12
+    enroll.out_enroll_12,
+    enroll.ce_after,
+    enroll.ce_before,
+    enroll.total_months_after,
+    enroll.total_months_before,
+    case when enroll.ce_after >= 13 then 1 else 0 end as ce_after_12
 INTO chcdwork.dbo.poem_cohort_analysis1
 FROM chcdwork.dbo.poem_cohort a 
 LEFT JOIN CHCDWORK.dbo.poem_cohort_diab_sample b 
@@ -62,7 +67,7 @@ LEFT JOIN CHCDWORK.dbo.poem_outcomes_outpatient_12 op
 LEFT JOIN CHCDWORK.dbo.poem_cohort_weights w
     ON a.client_nbr = w.client_nbr 
     AND a.ep_num = w.ep_num
- left join CHCDWORK.dbo.poem_outcomes_enrollment enroll 
+ left join CHCDWORK.dbo.poem_outcomes_enroll enroll 
     ON a.client_nbr = enroll.client_nbr 
    AND a.ep_num = enroll.ep_num
 ;
