@@ -16,9 +16,6 @@ FROM CHCDWORK.dbo.poem_cohort_dx a
 JOIN CHCDWORK.dbo.poem_comorbid_index b 
     ON a.dx_cd = b.dx; 
 
--- Verify the newly created table
-SELECT * FROM CHCDWORK.dbo.poem_cohort_dx_cov_dx;
-
 
 -- Extract covariates occurring within 280 days prior to the anchor date
 DROP TABLE IF EXISTS CHCDWORK.dbo.poem_cohort_cov_280;
@@ -35,8 +32,6 @@ JOIN CHCDWORK.dbo.poem_cohort_dx_cov_dx b
     AND b.clm_from_date <= a.anchor_date 
     AND DATEDIFF(day, b.clm_from_date, a.anchor_date) BETWEEN 0 AND 280;
 
--- Verify the extracted covariate data
-SELECT * FROM CHCDWORK.dbo.poem_cohort_cov_280 order by client_nbr;
 
 -- sum all (still excludes age from weight, so need to add that)
 drop table if exists CHCDWORK.dbo.poem_cohort_cov_weights ;
@@ -163,4 +158,62 @@ GROUP BY
     a.ep_num;  
  
 DROP TABLE IF EXISTS CHCDWORK.dbo.poem_cohort_subgroup_htn1;
+
+
+------------------
+--- Mental Health -----
+------------------
+ 
+--  all mh DX with categories
+DROP TABLE IF EXISTS CHCDWORK.dbo.poem_cohort_subgroup_mh1;
+
+SELECT DISTINCT 
+    a.client_nbr, 
+    a.clm_from_date,
+    b.mh_category
+INTO CHCDWORK.dbo.poem_cohort_subgroup_mh1
+FROM CHCDWORK.dbo.poem_cohort_dx a 
+JOIN CHCDWORK.dbo.poem_mh_dx b 
+    ON a.dx_cd = b.icd_dx;
+
+-- mental health DX to anchor dates with categories
+DROP TABLE IF EXISTS CHCDWORK.dbo.poem_cohort_mh_sample_detail;
+
+SELECT 
+    a.client_nbr, 
+    a.ep_num,
+    b.mh_category,
+    COUNT(b.clm_from_date) AS dx_count
+INTO CHCDWORK.dbo.poem_cohort_mh_sample_detail
+FROM CHCDWORK.dbo.poem_cohort a
+INNER JOIN CHCDWORK.dbo.poem_cohort_subgroup_mh1 b 
+    ON a.client_nbr = b.client_nbr 
+    AND b.clm_from_date <= a.anchor_date 
+    AND DATEDIFF(day, b.clm_from_date, a.anchor_date) BETWEEN 0 AND 280
+GROUP BY 
+    a.client_nbr, 
+    a.ep_num,
+    b.mh_category;
+
+-- one row per client_nbr and ep_num if they had any mh dx
+DROP TABLE IF EXISTS CHCDWORK.dbo.poem_cohort_mh_sample;
+
+SELECT 
+    a.client_nbr, 
+    a.ep_num,
+    CASE 
+        WHEN COUNT(b.clm_from_date) > 0 THEN 1 
+        ELSE 0 
+    END AS mh_sample
+INTO CHCDWORK.dbo.poem_cohort_mh_sample
+FROM CHCDWORK.dbo.poem_cohort a
+LEFT JOIN CHCDWORK.dbo.poem_cohort_subgroup_mh1 b 
+    ON a.client_nbr = b.client_nbr 
+    AND b.clm_from_date <= a.anchor_date 
+    AND DATEDIFF(day, b.clm_from_date, a.anchor_date) BETWEEN 0 AND 280
+GROUP BY 
+    a.client_nbr, 
+    a.ep_num;  
+ 
+DROP TABLE IF EXISTS CHCDWORK.dbo.poem_cohort_subgroup_mh1;
  

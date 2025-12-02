@@ -174,24 +174,16 @@ episodes %>%
   
 ```
 
-# ```{r}
-# cohort %>%
-#   select(race_desc) %>%
-#   tbl_summary()
-# ```
-
-
 ```{r add-time-vars}
 
-cohort <- 
-cohort %>%
+cohort <- cohort %>%
   mutate(
-    week_counter = as.integer(difftime(anchor_date, as.Date('2019-01-01'), units = "weeks")) + 1,
-    biweekly_counter = as.integer(difftime(anchor_date, as.Date('2019-01-01'), units = "days") / 14) + 1,
-    monthly_counter = as.integer(difftime(anchor_date, as.Date('2019-01-01'), units = "days") / 30) + 1,
-    anchor_date_week = as.Date('2019-01-01') + (week_counter - 1) * 7,
-    anchor_date_twoweeks = as.Date('2019-01-01') + (biweekly_counter - 1) * 14,
-    anchor_date_month = as.Date('2019-01-01') + (monthly_counter - 1) * 30
+    week_counter      = as.integer(difftime(anchor_date, as.Date('2019-01-01'), units = "weeks")) + 1,
+    biweekly_counter  = as.integer(difftime(anchor_date, as.Date('2019-01-01'), units = "days") / 14) + 1,
+    monthly_counter   = as.integer(difftime(anchor_date, as.Date('2019-01-01'), units = "days") / 30) + 1,
+    anchor_date_week      = as.Date('2019-01-01') + (week_counter - 1) * 7,
+    anchor_date_twoweeks  = as.Date('2019-01-01') + (biweekly_counter - 1) * 14,
+    anchor_date_month     = floor_date(anchor_date, unit = "month")  # ??? key change
   )
 
 # Updated time periods with new date ranges
@@ -199,14 +191,16 @@ time_periods <- tibble::tibble(
   period = factor(c("Pre_period", "FFCRA", "Unwinding"), 
                   levels = c("Pre_period", "FFCRA", "Unwinding")),
   start = as.Date(c("2019-01-01", "2020-01-01", "2023-04-01")),
-  end   = as.Date(c("2019-12-31", "2023-03-31", "2023-08-31"))  # Note: You may need to adjust end date for Unwinding based on your data
+  end   = as.Date(c("2019-12-31", "2023-03-31", "2023-08-31"))  
 )
+
+time_periods
 
 # COVID period for sensitivity analysis (kept separate)
 covid_period <- tibble::tibble(
   period = "COVID",
-  start = as.Date("2020-03-01"),  # Adjust this date as needed for your COVID period definition
-  end = as.Date("2020-12-31")     # Adjust this date as needed for your COVID period definition
+  start = as.Date("2020-03-01"),  
+  end = as.Date("2020-12-31")     
 )
 
 period_rects <- time_periods %>%
@@ -327,7 +321,6 @@ visit.plots.subgroups_any <- bind_rows(
 
 ```{r}
 
-
 # Plot: only Any Outpatient (black line), keep period shading and 2 panels
 ggplot() +
   geom_rect(
@@ -365,7 +358,6 @@ ggplot() +
   )
 
 ```
-
 
 {{< pagebreak >}}
 
@@ -813,6 +805,46 @@ enrollment.subgroups.ce %>%
   )
 ```
 
+{{< pagebreak >}}
+
+## OGT vs A1C
+
+```{r diab-test-types}
+
+# get both test types but tidy
+diab.both.tests <- 
+bind_rows(
+ diab.subgroup %>%
+    group_by(anchor_date_twoweeks) %>%
+    summarise(screening_rate = mean(out_diab_screen_hba1c_12, na.rm = TRUE), .groups = "drop") %>%
+    mutate(test_type = "A1c")
+,
+ diab.subgroup %>%
+    group_by(anchor_date_twoweeks) %>%
+    summarise(screening_rate = mean(out_diab_screen_gtt_12, na.rm = TRUE), .groups = "drop") %>%
+    mutate(test_type = "OGTT")
+)
+
+# graph
+diab.both.tests %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = screening_rate, color = test_type)) +
+  geom_line(linewidth = 1) +
+  geom_rect(
+    data = period_rects,
+    aes(xmin = start, xmax = end, ymin = 0, ymax = Inf, fill = period),
+    alpha = 0.2,
+    inherit.aes = FALSE
+  ) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "Diabetes Screening Rates 12 Months (OGTT vs A1c)",
+    x = "Date",
+    y = "% Episode with Screening",
+  ) +
+  theme_minimal()
+
+```
 
 {{< pagebreak >}}
 
@@ -1026,6 +1058,207 @@ tbl_regression(models$htn_postpartum_adj,
   estimate_fun = ~ style_number(.x, digits = 4)
 )
 
+```
+
+{{< pagebreak >}}
+
+## Event Study
+
+```{r graph-ce}
+# Filter
+cohort_filtered <- cohort %>% 
+  filter(anchor_date >= as.Date("2020-01-01") & anchor_date < as.Date("2023-08-31"))
+
+
+outcome_ce <- cohort_filtered %>%
+  group_by(anchor_date_twoweeks) %>%
+  summarise(
+    mean_ce_after_12 = mean(ce_after_12, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Plot outcome over time
+ggplot(outcome_ce, aes(x = anchor_date_twoweeks, y = mean_ce_after_12)) +
+  geom_line(linewidth = 1, color = "darkblue") +
+  geom_point(color = "darkblue", alpha = 0.6) +
+  labs(
+    title = "Continuous Enrollment (Filtered for 2020)",
+    x = "Biweek Period",
+    y = "% CE After 12",
+    size = "N"
+  ) +
+  theme_minimal() +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 10, color = "gray40"),
+    axis.title = element_text(size = 11, face = "bold")
+  )
+
+```
+
+```{r}
+test_unwinding_dates_simple <- function(data, 
+                                        outcome_var = "ce_after_12", 
+                                        baseline_start = as.Date("2020-01-01"),
+                                        unwinding_test_start = as.Date("2021-01-01"),
+                                        unwinding_test_end = as.Date("2023-04-14"),
+                                        data_end_date = as.Date("2023-08-31"),
+                                        interval_days = 14) {
+  
+  # sequence of potential unwinding start dates
+  test_dates <- seq(from = unwinding_test_start, 
+                    to = unwinding_test_end, 
+                    by = interval_days)
+  
+  # Function to fit models for a given unwinding start date
+  fit_model_for_date <- function(unwind_start, data) {
+    
+    # Baseline ends the day BEFORE unwinding starts
+    baseline_end <- unwind_start - 1
+    
+    # mutually exclusive period indicators
+    data_temp <- data %>%
+      mutate(
+        period_Baseline = if_else(anchor_date >= baseline_start & anchor_date <= baseline_end, 1, 0),
+        period_PostUnwinding = if_else(anchor_date >= unwind_start & anchor_date <= data_end_date, 1, 0)
+      )
+    
+    # filter to only baseline and post-unwinding observations
+    data_temp <- data_temp %>%
+      filter(period_Baseline == 1 | period_PostUnwinding == 1)
+    
+    # calculate biweekly_counter using baseline_start
+    data_temp <- data_temp %>%
+      mutate(
+         biweekly_counter_new = as.integer(difftime(anchor_date, baseline_start, units = "days") / 14)
+      )
+    
+    # check mutually exclusive
+    check_sum <- data_temp %>%
+      mutate(period_sum = period_Baseline + period_PostUnwinding) %>%
+      pull(period_sum)
+    
+    if(any(check_sum != 1)) {
+      warning(paste("Periods not mutually exclusive for date:", unwind_start))
+    }
+    
+    # Model 1: ITS model with time trends
+    model_its <- lm(
+      as.formula(paste0(outcome_var, " ~ biweekly_counter_new + period_PostUnwinding + ",
+                       "biweekly_counter_new:period_PostUnwinding")),
+      data = data_temp
+    )
+    
+    # Model 2: Simple pre/post model (no time trends)
+    model_prepost <- lm(
+      as.formula(paste0(outcome_var, " ~ period_PostUnwinding")),
+      data = data_temp
+    )
+    
+    # Extract coefficients for ITS model
+    coef_its <- broom::tidy(model_its)
+    b0_its <- coef_its %>% filter(term == "(Intercept)")
+    b1_its <- coef_its %>% filter(term == "biweekly_counter_new")
+    b2_its <- coef_its %>% filter(term == "period_PostUnwinding")
+    b3_its <- coef_its %>% filter(term == "biweekly_counter_new:period_PostUnwinding")
+    
+    # Extract coefficients for pre/post model
+    coef_prepost <- broom::tidy(model_prepost)
+    intercept_prepost <- coef_prepost %>% filter(term == "(Intercept)")
+    effect_prepost <- coef_prepost %>% filter(term == "period_PostUnwinding")
+    
+    # Return results
+    tibble(
+      unwinding_start_date = unwind_start,
+      baseline_end_date = baseline_end,
+      n_baseline = sum(data_temp$period_Baseline == 1),
+      n_postunwinding = sum(data_temp$period_PostUnwinding == 1),
+      
+      # ITS model results
+      its_intercept = b0_its$estimate,
+      its_time_trend = b1_its$estimate,
+      its_level_change = b2_its$estimate,
+      its_level_se = b2_its$std.error,
+      its_level_pval = b2_its$p.value,
+      its_level_ci_lower = its_level_change - 1.96 * its_level_se,
+      its_level_ci_upper = its_level_change + 1.96 * its_level_se,
+      its_slope_change = b3_its$estimate,
+      its_slope_se = b3_its$std.error,
+      
+      # Pre/post model results
+      prepost_intercept = intercept_prepost$estimate,
+      prepost_effect = effect_prepost$estimate,
+      prepost_effect_se = effect_prepost$std.error,
+      prepost_effect_pval = effect_prepost$p.value,
+      prepost_ci_lower = prepost_effect - 1.96 * prepost_effect_se,
+      prepost_ci_upper = prepost_effect + 1.96 * prepost_effect_se
+    )
+  }
+  
+  # map over all test dates
+  results <- purrr::map_dfr(test_dates, ~fit_model_for_date(.x, data))
+  
+  return(results)
+}
+
+# run function 
+cohort_unwinding_tests_simple <- test_unwinding_dates_simple(
+  data = cohort_filtered,
+  outcome_var = "ce_after_12",
+  baseline_start = as.Date("2020-01-01"),
+  unwinding_test_start = as.Date("2021-01-01"),
+  unwinding_test_end = as.Date("2023-04-08"),
+  data_end_date = as.Date("2023-08-31")
+)
+
+# Write full results to Excel
+library(openxlsx)
+write.xlsx(cohort_unwinding_tests_simple, "event_study_results.xlsx")
+
+# Plot ITS model results
+p1 <- ggplot(cohort_unwinding_tests_simple, aes(x = unwinding_start_date, y = its_level_change)) +
+  geom_ribbon(aes(ymin = its_level_ci_lower, ymax = its_level_ci_upper), 
+              fill = "steelblue", alpha = 0.3) +
+  geom_line(linewidth = 1.2, color = "steelblue") +
+  geom_point(size = 2, color = "steelblue") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red", linewidth = 0.8) +
+  labs(
+    title = "ITS Model: Level Change (B2) by Unwinding Start Date",
+    subtitle = "Model: Y = B0 + B1*time + B2*Post + B3*time*Post",
+    x = "Unwinding Start Date",
+    y = "B2: Level Change Coefficient"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 13, face = "bold"),
+    plot.subtitle = element_text(size = 10, color = "gray40"),
+    axis.title = element_text(size = 11, face = "bold")
+  )
+
+# Plot pre/post model results
+p2 <- ggplot(cohort_unwinding_tests_simple, aes(x = unwinding_start_date, y = prepost_effect)) +
+  geom_ribbon(aes(ymin = prepost_ci_lower, ymax = prepost_ci_upper), 
+              fill = "darkgreen", alpha = 0.3) +
+  geom_line(linewidth = 1.2, color = "darkgreen") +
+  geom_point(size = 2, color = "darkgreen") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red", linewidth = 0.8) +
+  labs(
+    title = "Pre/Post Model: Effect by Unwinding Start Date",
+    subtitle = "Model: Y = B0 + B1*Post (no time trends)",
+    x = "Unwinding Start Date",
+    y = "B1: Pre/Post Effect"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 13, face = "bold"),
+    plot.subtitle = element_text(size = 10, color = "gray40"),
+    axis.title = element_text(size = 11, face = "bold")
+  )
+
+# Display both plots
+library(patchwork)
+p1 / p2
 ```
 
 {{< pagebreak >}}
@@ -1275,4 +1508,137 @@ compare_models(
   c("Original - Unadj",         "Excluded COVID - Unadj",
     "Original - Adj",           "Excluded COVID - Adj")
 ) |> as_flex_table() |> FitFlextableToPage()
+```
+
+{{< pagebreak >}}
+
+# Other Break Analysis
+
+```{r}
+# Set Paths 
+current.path <- here::here()
+poem.path <- dirname(dirname(current.path))
+codeset.path <- file.path(poem.path,"poem", "data","ancillary")
+
+dshs.numbers.path <- file.path(codeset.path,"monthly-enrollment-by-risk-group.xlsx")
+
+dshs.numbers <- read_excel(dshs.numbers.path, skip = 2) %>% 
+  clean_names()
+
+dshs.numbers <- 
+dshs.numbers %>%
+   mutate(
+    date_col = suppressWarnings(as.numeric(month)),  
+    month = as.Date(date_col, origin = "1899-12-30") 
+  )
+
+dshs.numbers <- 
+dshs.numbers %>%
+  filter(month > as.Date("2019-01-01"))
+
+
+```
+
+## Percent Change in DSHS Numbers
+
+```{r}
+dshs.numbers.change <- 
+ dshs.numbers %>%
+  arrange(month) %>% 
+  mutate(
+    pct_change_pregnant = (pregnant_women / lag(pregnant_women) - 1) * 100
+  ) 
+
+
+dshs.numbers.change %>%
+  ggplot(aes(x = month, y = pct_change_pregnant)) +
+  geom_line(size = 1) +
+  geom_point() +
+  labs(
+    title = "Month-to-Month Percent Change in Pregnant Women Enrollment (From DSHS numbers)",
+    x = "Month",
+    y = "Percent Change (%)"
+  ) +
+  theme_minimal()
+
+
+```
+
+```{r}
+dshs.numbers.change %>%
+  filter(month >= as.Date("2023-01-01") & month <= as.Date("2024-06-30")) %>%
+  select(month, pregnant_women, pct_change_pregnant) %>%
+  mutate(
+    pregnant_women = round(pregnant_women, 0),
+    pct_change_pregnant = round(pct_change_pregnant, 2)
+  ) %>%
+  flextable() %>%
+  set_header_labels(
+    month = "Month",
+    pregnant_women = "Pregnant Women (Count)",
+    pct_change_pregnant = "Percent Change (%)"
+  ) %>%
+  colformat_num(j = "pct_change_pregnant", suffix = "%") %>%
+  theme_box() %>%
+  autofit() %>%
+  align(align = "center", part = "all") %>%
+  bold(part = "header") %>%
+  set_caption("Month-to-Month Percent Change in Pregnant Women Enrollment (Jan 2023 - Jun 2024)")
+
+```
+
+## Change in CE (from cohort)
+
+```{r}
+ce.change <-
+cohort %>%
+  filter(anchor_date_month > as.Date("2019-12-31")) %>%
+  group_by(anchor_date_month) %>%
+  summarize(pct_ce_after_12 = mean(ce_after_12), .groups = "drop") %>%
+  arrange(anchor_date_month) %>% 
+  mutate(
+    pct_change_pregnant = (pct_ce_after_12 / lag(pct_ce_after_12) - 1) * 100
+  ) 
+
+ce.change %>%
+  ggplot(aes(x = anchor_date_month, y = pct_change_pregnant)) +
+  geom_line(size = 1) +
+  geom_point() +
+  labs(
+    title = "Month-to-Month Percent Change in Pregnant Women Enrollment (From DSHS numbers)",
+    x = "Month",
+    y = "Percent Change (%)"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+ce_tbl <- ce.change %>%
+   filter(anchor_date_month >= as.Date("2022-01-01") & anchor_date_month <= as.Date("2023-09-30")) %>%
+  mutate(
+    rate_pct = pct_ce_after_12 * 100,                 # level as %
+    mom_change_pct = pct_change_pregnant              # already in %
+  ) %>%
+  select(anchor_date_month, rate_pct, mom_change_pct) %>%
+  mutate(
+    rate_pct = round(rate_pct, 2),
+    mom_change_pct = round(mom_change_pct, 2)
+  )
+
+# Flextable
+ce_tbl %>%
+  flextable() %>%
+  set_header_labels(
+    anchor_date_month = "Month",
+    rate_pct = "CE After 12 (Level, %)",
+    mom_change_pct = "MoM Change (%)"
+  ) %>%
+  colformat_num(j = "rate_pct", suffix = "%") %>%
+  colformat_num(j = "mom_change_pct", suffix = "%") %>%
+  theme_box() %>%
+  autofit() %>%
+  align(align = "center", part = "all") %>%
+  bold(part = "header") %>%
+  set_caption("Monthly CE After 12 Rate and Month-over-Month Change")
 ```
