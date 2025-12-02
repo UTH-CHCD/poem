@@ -20,6 +20,8 @@ codeset.path <- file.path(poem.path,"poem", "data","ancillary")
 
 ########## Load Pregnany Codes 
 excel.path <- file.path(codeset.path,"Data Harmonization Tracker_20241127.xlsx")
+excel.path.mh <- file.path(codeset.path,"Data Harmonization Tracker_20251016.xlsx")
+
 
 
 #### LOAD AND CLEAN DATA ####
@@ -81,12 +83,27 @@ covariates.icd[] <- lapply(covariates.icd, function(x) {
 # Check encoding again (should be fixed)
 find_funky_characters(covariates.icd)
 
+
+####################################
+### MH Codes ####################
+####################################
+
+# Load data
+mh.dx.raw <- read_excel(excel.path.mh, sheet = 'Mental Health ICD_DX long') %>% clean_names() 
+
+# clean column and assign new names
+mh.dx <- 
+mh.dx.raw %>% select(-variable_name)
+
+colnames(mh.dx) <- c("mh_category", "icd_dx")
+
+
+# check encoding
+find_funky_characters(mh.dx)
+
 ################################
 #### Load Data to SPC ####
 ################################
-
-# Connect to Greenplum (note: this requires having set up keyring. it will get your key info based on the greenplum_user variable)
-
 
 # Write the raw id table to the database
 
@@ -114,6 +131,18 @@ if (dbExistsTable(spc, table_name)) {
 
 # Write raw table to database 
 dbWriteTable(spc, table_name, covariates.icd, overwrite=TRUE)
+
+## MH DX
+# Name of the table
+table_name <- "poem_mh_dx"
+
+# Check if the table exists and drop it if it does
+if (dbExistsTable(spc, table_name)) {
+  dbRemoveTable(spc, table_name)
+}
+
+# Write raw table to database 
+dbWriteTable(spc, table_name, mh.dx, overwrite=TRUE)
 
 # Close the connection
 dbDisconnect(spc)
