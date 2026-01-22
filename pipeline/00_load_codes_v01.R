@@ -5,12 +5,26 @@ pacman::p_load(RPostgres, DBI, keyring,janitor, tidyverse, readxl, stringr)
 #### SETUP PATHS AND VERSIONS ####
 # For versioning of the Excel report of DX
 # version <- "v01"
+
 #### Database Connection 
 spc <- dbConnect(odbc::odbc(),
                  dsn = "SPC",
                  bigint = "integer")
 
 options(scipen = 999)
+
+### APCD
+#### Database Connection 
+greenplum_user = "jwozny" #this is for keyring to go get your password info so you don't have to write it in the file
+
+#Connect to Greenplum
+apcd <- dbConnect(RPostgres::Postgres(),
+                  dbname = "apcd_dev",
+                  user = "jwozny",
+                  password = key_get("apcd_dev", greenplum_user),
+                  host = "spgpcdplv001",
+                  bigint = "integer")
+
 
 # Set Paths 
 current.path <- here::here()
@@ -146,3 +160,63 @@ dbWriteTable(spc, table_name, mh.dx, overwrite=TRUE)
 
 # Close the connection
 dbDisconnect(spc)
+
+
+
+###########################
+### APCD Write
+###########################
+
+
+schema_name <- "research_dev"
+
+# =========================
+# DX
+# =========================
+table_id <- Id(schema = schema_name, table = "poem_covariates_dx")
+
+if (dbExistsTable(apcd, table_id)) {
+  dbRemoveTable(apcd, table_id)
+}
+
+dbWriteTable(
+  apcd,
+  table_id,
+  covariates.dx,
+  overwrite = TRUE
+)
+
+# =========================
+# ICD
+# =========================
+table_id <- Id(schema = schema_name, table = "poem_covariates_icd")
+
+if (dbExistsTable(apcd, table_id)) {
+  dbRemoveTable(apcd, table_id)
+}
+
+dbWriteTable(
+  apcd,
+  table_id,
+  covariates.icd,
+  overwrite = TRUE
+)
+
+# =========================
+# MH DX
+# =========================
+table_id <- Id(schema = schema_name, table = "poem_mh_dx")
+
+if (dbExistsTable(apcd, table_id)) {
+  dbRemoveTable(apcd, table_id)
+}
+
+dbWriteTable(
+  apcd,
+  table_id,
+  mh.dx,
+  overwrite = TRUE
+)
+
+# Close connection
+dbDisconnect(apcd)
