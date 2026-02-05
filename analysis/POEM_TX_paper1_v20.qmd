@@ -472,7 +472,13 @@ table1_all_periods_df <-
 ```
 
 ```{r}
-table1_all_periods
+table1_all_periods %>%
+  as_flex_table() %>%
+  theme_box() %>%
+  padding(padding = 1.5) %>%
+  autofit() %>%
+  FitFlextableToPage()
+
 ```
 
 
@@ -2060,17 +2066,6 @@ ce.change %>%
 
 ```
 
-```{r}
-cohort %>%
-  group_by(anchor_date_month) %>%
-  summarize(pct_ce_after_12 = mean(ce_after_12), .groups = "drop") %>%
-  arrange(anchor_date_month) %>% 
-  mutate(
-    pct_change_pregnant = (pct_ce_after_12 / lag(pct_ce_after_12) - 1) * 100
-  ) %>%
-  mutate(state = "texas", measure = "pct_change_continuous_enrollment") %>% view()
-```
-
 
 ```{r}
 ce_tbl <- ce.change %>%
@@ -2084,8 +2079,6 @@ ce_tbl <- ce.change %>%
     rate_pct = round(rate_pct, 2),
     mom_change_pct = round(mom_change_pct, 2)
   )
-
-ce_tbl
 
 # Flextable
 ce_tbl %>%
