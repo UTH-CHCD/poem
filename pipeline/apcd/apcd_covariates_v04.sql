@@ -5,6 +5,7 @@
 -- Drop and create a table linking diagnosis codes with covariates
 DROP TABLE IF EXISTS research_dev.poem_cohort_dx_cov_dx;
 
+/*
 CREATE TABLE research_dev.poem_cohort_dx_cov_dx as
 SELECT distinct a.apcd_id, 
        a.dos,
@@ -13,11 +14,24 @@ SELECT distinct a.apcd_id,
        b.no_transfusion_weight
 FROM research_dev.med_dx_poem a 
 JOIN research_dev.poem_comorbid_index b 
-    ON a.dx = b.dx
+    ON a.dx LIKE b.dx || '%'
   join research_dev.poem_cohort c 
     on a.apcd_id = c.apcd_id
-; 
+; */
 
+CREATE TABLE research_dev.poem_cohort_dx_cov_dx as
+SELECT distinct a.apcd_id, 
+       a.dos,
+       b.condition, 
+       b.smm_weight, 
+       b.no_transfusion_weight
+FROM research_dev.med_dx_poem a 
+JOIN research_dev.poem_comorbid_index b 
+    ON LEFT(a.dx, LENGTH(b.dx)) = b.dx
+JOIN research_dev.poem_cohort c 
+    on a.apcd_id = c.apcd_id;
+
+   
 -- Extract covariates occurring within 280 days prior to the anchor date
 DROP TABLE IF EXISTS research_dev.poem_cohort_cov_280;
 
@@ -108,7 +122,11 @@ SELECT
     CASE 
         WHEN MAX(CASE WHEN b.variable_name LIKE '%pre%' THEN 1 ELSE 0 END) = 1 
         THEN 1 ELSE 0 
-    END AS pre_existing_diab
+    END AS pre_existing_diab,
+    CASE 
+        WHEN MAX(CASE WHEN b.variable_name LIKE '%gest%' THEN 1 ELSE 0 END) = 1 
+        THEN 1 ELSE 0 
+    END AS gest_diab
 FROM research_dev.poem_cohort a
 LEFT JOIN research_dev.poem_cohort_subgroup_dm1 b 
     ON a.apcd_id = b.apcd_id 
@@ -135,7 +153,7 @@ WHERE variable_name LIKE '%htn%';
 DROP TABLE IF EXISTS research_dev.poem_cohort_subgroup_htn1;
 
 CREATE TABLE research_dev.poem_cohort_subgroup_htn1 AS
-SELECT DISTINCT a.apcd_id, a.dos
+SELECT DISTINCT a.apcd_id, a.dos, b.variable_name
 FROM research_dev.med_dx_poem a 
 JOIN research_dev.poem_covariates_dx_htn b 
     ON a.dx LIKE b.cd_value_sql
@@ -151,7 +169,23 @@ SELECT
     CASE 
         WHEN COUNT(b.dos) > 0 THEN 1 
         ELSE 0 
-    END AS htn_sample
+    END AS htn_sample,
+    MAX(CASE 
+        WHEN b.variable_name = 'com_pre_htn' THEN 1 
+        ELSE 0 
+    END) AS htn_chronic,
+    MAX(CASE 
+        WHEN b.variable_name = 'com_gest_htn' THEN 1 
+        ELSE 0 
+    END) AS htn_gestational,
+    MAX(CASE 
+        WHEN b.variable_name = 'com_pre_htn_superimposed' THEN 1 
+        ELSE 0 
+    END) AS htn_preeclampsia,
+    MAX(CASE 
+        WHEN b.variable_name = 'com_pulm_htn' THEN 1 
+        ELSE 0 
+    END) AS htn_pulmonary
 FROM research_dev.poem_cohort a
 LEFT JOIN research_dev.poem_cohort_subgroup_htn1 b 
     ON a.apcd_id = b.apcd_id 
@@ -210,7 +244,15 @@ SELECT
     CASE 
         WHEN COUNT(b.dos) > 0 THEN 1 
         ELSE 0 
-    END AS mh_sample
+    END AS mh_sample,
+    MAX(CASE WHEN b.mh_category = 'Anxiety and fear-related disorders'               THEN 1 ELSE 0 END) AS mh_anxiety,
+    MAX(CASE WHEN b.mh_category = 'Depressive disorders'                              THEN 1 ELSE 0 END) AS mh_depression,
+    MAX(CASE WHEN b.mh_category = 'Suicidal ideation/attempt/intentional self-harm'  THEN 1 ELSE 0 END) AS mh_suicidal,
+    MAX(CASE WHEN b.mh_category = 'Schizophrenia spectrum/other pyschotic disorders' THEN 1 ELSE 0 END) AS mh_schizophrenia,
+    MAX(CASE WHEN b.mh_category = 'Trauma- and stressor-related disorders'           THEN 1 ELSE 0 END) AS mh_trauma,
+    MAX(CASE WHEN b.mh_category = 'Bipolar and related disorders'                    THEN 1 ELSE 0 END) AS mh_bipolar,
+    MAX(CASE WHEN b.mh_category = 'Other - neurodevelopmental disorders'             THEN 1 ELSE 0 END) AS mh_neurodevelopmental,
+    MAX(CASE WHEN b.mh_category = 'Other - other disorders'                          THEN 1 ELSE 0 END) AS mh_other
 FROM research_dev.poem_cohort a
 LEFT JOIN research_dev.poem_cohort_subgroup_mh1 b 
     ON a.apcd_id = b.apcd_id 

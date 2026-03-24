@@ -157,6 +157,8 @@ episodes %>%
   filter(los <= 60) %>%
   filter( prim_med_plan_mon == "Medicaid") %>%
   filter(prim_med_plan_design_mon != "HTW")
+
+cohort %>% nrow()
   
 ```
 

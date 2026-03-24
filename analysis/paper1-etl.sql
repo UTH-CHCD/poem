@@ -8,7 +8,12 @@ SELECT DISTINCT
     a.*, 
     diab_sample,
     pre_existing_diab,
+    gest_diab,                  
     htn_sample,
+    htn_chronic,                
+    htn_gestational,            
+    htn_preeclampsia,           
+    htn_pulmonary,              
     out_diab_screen_6,
     out_diab_screen_12,
     out_diab_screen_hba1c_6,   
@@ -40,8 +45,12 @@ SELECT DISTINCT
     enroll.ce_before,
     enroll.total_months_after,
     enroll.total_months_before,
+    enroll.ce_after_nohtw,
+    case when enroll.ce_after_nohtw >= 13 then 1 else 0 end as ce_after_12_nohtw,
     case when enroll.ce_after >= 13 then 1 else 0 end as ce_after_12,
-    mh.mh_sample
+    mh.mh_sample,
+    cwlk.phr,
+    cwlk.hsr
 INTO chcdwork.dbo.poem_cohort_analysis1
 FROM chcdwork.dbo.poem_cohort a 
 LEFT JOIN CHCDWORK.dbo.poem_cohort_diab_sample b 
@@ -68,14 +77,15 @@ LEFT JOIN CHCDWORK.dbo.poem_outcomes_outpatient_12 op
 LEFT JOIN CHCDWORK.dbo.poem_cohort_weights w
     ON a.client_nbr = w.client_nbr 
     AND a.ep_num = w.ep_num
- left join CHCDWORK.dbo.poem_outcomes_enroll enroll 
+LEFT JOIN CHCDWORK.dbo.poem_outcomes_enroll enroll 
     ON a.client_nbr = enroll.client_nbr 
-   AND a.ep_num = enroll.ep_num
- left join CHCDWORK.dbo.poem_cohort_mh_sample mh 
+    AND a.ep_num = enroll.ep_num
+LEFT JOIN CHCDWORK.dbo.poem_cohort_mh_sample mh 
     ON a.client_nbr = mh.client_nbr 
-   AND a.ep_num = mh.ep_num
-;
-
+    AND a.ep_num = mh.ep_num 
+ LEFT JOIN chcdwork.dbo.zip_phr_hsr_crosswalk cwlk
+   on a.zip = cwlk.zip;
+   
   select count(*) 
     from chcdwork.dbo.poem_cohort_analysis1
     union all
@@ -85,9 +95,9 @@ LEFT JOIN CHCDWORK.dbo.poem_cohort_weights w
    select count(*) 
     from chcdwork.dbo.poem_outcomes_out_htn_med
     ;
-    
-select * from chcdwork.dbo.poem_cohort_analysis1;
-   
+
+
+
  --- get diabetes detail 
 drop table if exists chcdwork.dbo.poem_cohort_analysis_diab_detail;
 

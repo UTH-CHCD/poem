@@ -1,0 +1,657 @@
+---
+title: "POEM TX MH Cohort Explore"
+date: today
+format: 
+  docx:
+    df-print: paged
+    page-layout: full
+    fig-width: 12
+    fig-height: 8
+    out-width: 100%
+  html:
+    fig-width: 12
+    fig-height: 8
+editor: source
+execute: 
+  echo: false
+  warning: false
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup}
+#| echo: false
+#| warning: false
+#| 
+
+# Load packages 
+pacman::p_load(RPostgres, DBI, keyring, janitor, tidyverse, readxl,
+               gtsummary, ggplot2, labelled, clipr, viridis, ggrepel, scales, ggthemes, flextable, DiagrammeR,
+               odbc, openxlsx, beepr, tictoc, here, sandwich, lmtest, lubridate, patchwork, ggnewscale, cowplot, broom)
+
+#### Setup File Paths ####
+# Get the location of this current .R file 
+current_dir <- here::here()
+
+
+#### Database Connection 
+greenplum_user = "jwozny" #this is for keyring to go get your password info so you don't have to write it in the file
+
+#Connect to Greenplum
+apcd <- dbConnect(RPostgres::Postgres(),
+                 dbname = "apcd_dev",
+                 user = "jwozny",
+                 password = key_get("apcd_dev", greenplum_user),
+                 host = "spgpcdplv001",
+                 bigint = "integer")
+
+options(scipen = 999)
+
+
+# Set Themes
+my_theme <- function() {
+  theme_minimal(base_size = 10) +
+    theme(
+      text = element_text(family = "sans", size=14),
+      axis.text.y = element_text(size = 12, face="plain", margin = margin(r = 10, unit = "pt")),
+      axis.title.y = element_text(size = 13, face = "bold", margin = margin(r = 20, unit = "pt")) ,
+      axis.title.x = element_text(size = 13, face = "bold", margin = margin(t = 20, unit = "pt")) , 
+      plot.caption = element_text(size = 12, face = "italic", margin = margin(t = 20, r=20, b = 5, l=20, unit = "pt"))
+    )
+}
+
+set_flextable_defaults(padding=2.5)
+
+theme_set(my_theme())
+
+# Flextable fix
+FitFlextableToPage <- function(ft, pgwidth = 6.5){
+
+  ft_out <- ft %>% autofit()
+
+  ft_out <- width(ft_out, width = dim(ft_out)$widths*pgwidth /(flextable_dim(ft_out)$widths))
+  return(ft_out)
+}
+
+
+```
+
+```{r get-outcomes}
+
+# Get from DB
+all.df <- dbGetQuery(apcd, " 
+  select * from research_dev.poem_cohort_with_elig
+ ;")
+
+
+all.df <- all.df %>%
+  select(where(~ !all(is.na(.) | trimws(.) == "")))
+
+```
+
+```{r}
+all.df <- 
+all.df %>%
+  mutate(
+    me_code = toupper(trimws(me_code)),
+    me_code_label = case_when(
+      me_code == "B" ~ "Pregnancy",
+      me_code == "C" ~ "Emergency",
+      me_code == "D" ~ "ICF-MR",
+      me_code == "F" ~ "Pregnancy for TP42 cases (Presumptive eligibility)",
+      me_code == "I" ~ "Institutional regular (CATS 1, 3 or 4) (BP16 or 17)",
+      me_code == "N" ~ "FFCHE (Former Foster Child in Higher Education)",
+      me_code == "P" ~ "Three months prior",
+      me_code == "Q" ~ "QMD coverage (Medicare only)",
+      me_code == "R" ~ "Regular",
+      me_code == "T" ~ "1929(b) Base plan 20 MAO client",
+      me_code == "W" ~ "Healthy Texas Women",
+      is.na(me_code) ~ NA_character_,
+      TRUE ~ paste0("UNKNOWN CODE: ", me_code)
+    )
+  ) %>%
+  mutate(
+    riskgrp_id = na_if(trimws(as.character(riskgrp_id)), ""),
+    riskgrp_id = if_else(is.na(riskgrp_id), NA_character_,
+                         str_pad(riskgrp_id, width = 3, side = "left", pad = "0")),
+    riskgrp_label = case_when(
+      riskgrp_id %in% c("000") ~ NA_character_,
+
+      riskgrp_id == "001" ~ "ST Member-TANF Adult - Medicare Related",
+      riskgrp_id == "002" ~ "ST Member-Disabled & Blind",
+      riskgrp_id == "003" ~ "ST Member-TANF Adults",
+      riskgrp_id == "004" ~ "ST Member-AFDC Children",
+      riskgrp_id == "005" ~ "ST Member-Pregnant Women",
+      riskgrp_id == "006" ~ "ST Member-Newborns",
+      riskgrp_id == "009" ~ "ST Member-Federal Mandate Children",
+      riskgrp_id == "013" ~ "ST Member-TANF Children <=1 Year Old",
+      riskgrp_id == "014" ~ "ST Member-TANF Children >1 and <21",
+      riskgrp_id == "015" ~ "ST Member-Expansion Children <=1 Year Old",
+      riskgrp_id == "016" ~ "ST Member-Expansion Children >1 and <21",
+      riskgrp_id == "018" ~ "ST Member - Medically Needy No Spenddown",
+      riskgrp_id == "020" ~ "ST Member-Pregnant Women - Qualified Alien",
+      riskgrp_id == "021" ~ "ST Member-Expansion Child <=1 Yr. Old - Qualified Alien",
+      riskgrp_id == "022" ~ "ST Member-Expansion Child >1 and <21 - Qualified Alien",
+      riskgrp_id == "023" ~ "ST Member-Federal Mandate Child - Qualified Alien",
+      riskgrp_id == "026" ~ "ST Member-TANF Child <=1 Yr. Old - Qualified Alien",
+      riskgrp_id == "027" ~ "ST Member-TANF Child >1 and <21 - Qualified Alien",
+      riskgrp_id == "030" ~ "ST Member-SSI - Aged, Blind, and Disabled",
+
+      riskgrp_id == "051" ~ "Foster Care - Partial Month",
+      riskgrp_id == "052" ~ "Foster Care - Member <= 21 Years Old",
+      riskgrp_id == "053" ~ "Foster Care - Member <= 21 Years Old (State Funded)",
+      riskgrp_id == "054" ~ "Foster Care - Member >= 21 and < 22 Years Old (State Funded)",
+      riskgrp_id == "055" ~ "Foster Care - Enrolled With Risk Group Error",
+      riskgrp_id == "056" ~ "Former Foster Care Higher Education - State Funded",
+      riskgrp_id == "057" ~ "Foster Care - Member <= 21 - Qualified Alien",
+
+      riskgrp_id == "060" ~ "Under Age 1 Child",
+      riskgrp_id == "061" ~ "Under Age 1 Child - QA",
+      riskgrp_id == "062" ~ "Age 1-5 Child",
+      riskgrp_id == "063" ~ "Age 1-5 Child - QA",
+      riskgrp_id == "064" ~ "Age 6-14 Child",
+      riskgrp_id == "065" ~ "Age 6-14 Child - QA",
+      riskgrp_id == "066" ~ "Age 15-18 Child",
+      riskgrp_id == "067" ~ "Age 15-18 Child - QA",
+      riskgrp_id == "068" ~ "Age 19-20 Child",
+      riskgrp_id == "069" ~ "Age 19-20 Child - QA",
+
+      riskgrp_id == "070" ~ "ST Member- AA/PCA",
+
+      riskgrp_id == "100" ~ "SP Member - Non-Medicare Community",
+      riskgrp_id == "111" ~ "SP Member - Non-Medicare SPW",
+      riskgrp_id == "114" ~ "SP Member - Dual Eligible Community",
+      riskgrp_id == "115" ~ "SP Member - Dual Eligible SPW",
+      riskgrp_id == "118" ~ "SP Member -Non-Medicare Nursing Facility",
+      riskgrp_id == "119" ~ "SP Member - Dual Eligible Nursing Facility",
+      riskgrp_id == "120" ~ "SP Member - Non-Medicare Nursing Facility",
+      riskgrp_id == "121" ~ "SP Member - Dual Eligible Nursing Facility",
+      riskgrp_id == "122" ~ "Intellectual Developmental Disabilities (under 21)",
+      riskgrp_id == "123" ~ "Intellectual Developmental Disabilities (over 21)",
+      riskgrp_id == "124" ~ "Dual Eligible Community",
+      riskgrp_id == "125" ~ "Dual Eligible SPW",
+      riskgrp_id == "126" ~ "Dual Eligible Nursing Facility",
+      riskgrp_id == "130" ~ "SP Member- MBCC",
+
+      riskgrp_id == "160" ~ "ICM Member - Non-Medicare Community",
+      riskgrp_id == "161" ~ "ICM Member - Non-Medicare CBA",
+      riskgrp_id == "164" ~ "ICM Member - Dual Eligible Community",
+      riskgrp_id == "165" ~ "ICM Member - Dual Eligible CBA",
+      riskgrp_id == "168" ~ "ICM Member - Non-Medicare Nursing Facility after 09/01/00",
+      riskgrp_id == "169" ~ "ICM Member - Dual Eligible Nursing Facility after 09/01/00",
+
+      riskgrp_id == "201" ~ "NS-SSI Child <21",
+      riskgrp_id == "202" ~ "NS-SSI Child <21 - Medicare",
+      riskgrp_id == "203" ~ "NS-SSI Adult 21-64",
+      riskgrp_id == "204" ~ "NS-SSI Adult 21-64 - Medicare",
+      riskgrp_id == "205" ~ "NS-TANF Child <21",
+      riskgrp_id == "206" ~ "NS-TANF Child <21 - Medicare",
+      riskgrp_id == "207" ~ "NS-TANF Adult 21+",
+      riskgrp_id == "208" ~ "NS-TANF Adult 21+ - Medicare",
+      riskgrp_id == "209" ~ "NS-SSI Adult 65+",
+      riskgrp_id == "210" ~ "NS-SSI Adult 65+ - Medicare",
+
+      riskgrp_id == "270" ~ "NS-Non-Medicaid Child",
+      riskgrp_id == "271" ~ "NS-Non-Medicaid Adult",
+
+      riskgrp_id == "301" ~ "CH Member - Member Less Than 1 Year",
+      riskgrp_id == "302" ~ "CH Member - Member 1 - 5 Years",
+      riskgrp_id == "303" ~ "CH Member - Member 6 - 14 Years",
+      riskgrp_id == "304" ~ "CH Member - Member 15 - 18 Years",
+      riskgrp_id == "305" ~ "CH Member - Perinatal Mother <= 185% FPL",
+      riskgrp_id == "306" ~ "CH Member - Perinatal Mother > 185% and <= 200% FPL",
+      riskgrp_id == "307" ~ "CH Member - Perinatal Child <= 185% FPL",
+      riskgrp_id == "308" ~ "CH Member - Perinatal Child > 185% and <= 200% FPL",
+
+      riskgrp_id == "400" ~ "CH Member - Member Less Than 1 Year - TIER 1",
+      riskgrp_id == "401" ~ "CH Member - Member Less Than 1 Year - TIER 2",
+      riskgrp_id == "402" ~ "CH Member - Member Less Than 1 Year - TIER 3",
+      riskgrp_id == "403" ~ "CH Member - Member 1 - 5 Years - TIER 1",
+      riskgrp_id == "404" ~ "CH Member - Member 1 - 5 Years - TIER 2",
+      riskgrp_id == "405" ~ "CH Member - Member 1 - 5 Years - TIER 3",
+      riskgrp_id == "406" ~ "CH Member - Member 6 - 14 Years - TIER 1",
+      riskgrp_id == "407" ~ "CH Member - Member 6 - 14 Years - TIER 2",
+      riskgrp_id == "408" ~ "CH Member - Member 6 - 14 Years - TIER 3",
+      riskgrp_id == "409" ~ "CH Member - Member 15 - 18 Years - TIER 1",
+      riskgrp_id == "410" ~ "CH Member - Member 15 - 18 Years - TIER 2",
+      riskgrp_id == "411" ~ "CH Member - Member 15 - 18 Years - TIER 3",
+      riskgrp_id == "412" ~ "CH Member - Member Less Than 1 Year",
+      riskgrp_id == "413" ~ "CH Member - Member 1 - 5 Years",
+      riskgrp_id == "414" ~ "CH Member - Member 6 - 14 Years",
+      riskgrp_id == "415" ~ "CH Member - Member 15 - 18 Years",
+
+      riskgrp_id == "450" ~ "Medicaid Dental Member Less than 1 year",
+      riskgrp_id == "451" ~ "Medicaid Dental Member 1 - 5 Years",
+      riskgrp_id == "452" ~ "Medicaid Dental Member 6 - 14 Years",
+      riskgrp_id == "453" ~ "Medicaid Dental Member 15 - 18 Years",
+      riskgrp_id == "454" ~ "Medicaid Dental Member 19 - 20 Years",
+
+      riskgrp_id == "600" ~ "STAR Kids - Under Age 1 Child",
+      riskgrp_id == "601" ~ "STAR Kids - Age 1-5 Child",
+      riskgrp_id == "602" ~ "STAR Kids - Age 6-14 Child",
+      riskgrp_id == "603" ~ "STAR Kids - Age 15-20 Child",
+      riskgrp_id == "604" ~ "STAR Kids - MDCP Waiver",
+      riskgrp_id == "605" ~ "STAR Kids - YES Waiver",
+      riskgrp_id == "606" ~ "STAR Kids - IDD Waiver",
+
+      riskgrp_id == "900" ~ "Enrolled with Errors",
+      riskgrp_id == "901" ~ "Overlap with STAR+PLUS Waiver and IDD",
+      riskgrp_id == "902" ~ "IDD Under 21 and Medicare",
+      riskgrp_id == "903" ~ "IDD Over 21 and Medicare",
+
+      is.na(riskgrp_id) ~ NA_character_,
+      TRUE ~ paste0("UNKNOWN CODE: ", riskgrp_id)
+    )
+  ) %>%
+  mutate(
+    # keep only the numeric portion (e.g., "TP40" -> "40", "TA01" -> "01", "CH01" -> "01")
+    me_tp_num = str_extract(toupper(trimws(as.character(me_tp))), "\\d+"),
+    me_tp_num = if_else(is.na(me_tp_num), NA_character_, str_pad(me_tp_num, 2, "left", "0")),
+    me_tp_label = case_when(
+      me_tp_num == "01" ~ "State Kid's Health Program",
+      me_tp_num == "02" ~ "ME - SSI Waivers",
+      me_tp_num == "03" ~ "ME - Manual SSI Waivers",
+      me_tp_num == "04" ~ "ME - Manual SSI State Group Home",
+      me_tp_num == "05" ~ "ME - Manual SSI Non-State Group Home",
+      me_tp_num == "06" ~ "ME - Manual SSI Nursing Facility",
+      me_tp_num == "07" ~ "ME - Manual SSI State Hospital",
+      me_tp_num == "08" ~ "ME - SSI State Group Home",
+      me_tp_num == "09" ~ "ME - Manual SSI State School",
+      me_tp_num == "10" ~ "ME - Waivers",
+      me_tp_num == "11" ~ "CCAD Community Attendant",
+      me_tp_num == "12" ~ "ME - State Group Home",
+      me_tp_num == "13" ~ "MRLA",
+      me_tp_num == "14" ~ "CC - Alzheimer's Level II",
+      me_tp_num == "15" ~ "ME - Rider 51 - Non-State Group Home",
+      me_tp_num == "16" ~ "ME - Rider 51 - State School",
+      me_tp_num == "17" ~ "ME - Rider 51 - Nursing Facility",
+      me_tp_num == "18" ~ "ME - Grandfathered LTC",
+      me_tp_num == "19" ~ "MA - Children Born Before 1983",
+      me_tp_num == "20" ~ "MA - 18-21 Years Not in School",
+      me_tp_num == "21" ~ "ME - SSI Chest Hospital",
+      me_tp_num == "22" ~ "ME - Manual SSI",
+      me_tp_num == "23" ~ "LTC - Specialized Services",
+      me_tp_num == "24" ~ "ME - Rider 51 - State Group Home",
+      me_tp_num == "25" ~ "ME - Rider 51 - State Hospital",
+      me_tp_num == "26" ~ "ME - SSI Non-State Group Home",
+      me_tp_num == "27" ~ "ME - Prior Medicaid Institutional - Waiver",
+      me_tp_num == "28" ~ "LTC - Emergency Dental",
+      me_tp_num == "29" ~ "MA - State Time Limit Transitional",
+      me_tp_num == "30" ~ "ME - A and D - Emergency",
+      me_tp_num == "31" ~ "MA - MN - Emergency",
+      me_tp_num == "32" ~ "MA - MN w/Spend Down - Emergency",
+      me_tp_num == "33" ~ "MA - Children 1-5 - Emergency",
+      me_tp_num == "34" ~ "MA - Children 6-18 - Emergency",
+      me_tp_num == "35" ~ "MA - Children Under 1 - Emergency",
+      me_tp_num == "36" ~ "MA - Pregnant Women - Emergency",
+      me_tp_num == "37" ~ "MA - EID Transitional",
+      me_tp_num == "38" ~ "ME - SSI Nursing Facility",
+      me_tp_num == "39" ~ "ME - SSI State Hospital",
+      me_tp_num == "40" ~ "MA - Pregnant Women",
+      me_tp_num == "41" ~ "ME - Skilled Nursing Care",
+      me_tp_num == "42" ~ "MA - Pregnant Women- Presumptive",
+      me_tp_num == "43" ~ "MA - Children Under 1",
+      me_tp_num == "44" ~ "MA - Children 6-18",
+      me_tp_num == "45" ~ "MA - Newborn Children",
+      me_tp_num == "46" ~ "ME - SSI State School",
+      me_tp_num == "47" ~ "MA - Children denied TANF w/Applied Inc",
+      me_tp_num == "48" ~ "MA - Children 1-5",
+      me_tp_num == "49" ~ "LTC - Rehabilitative Services",
+      me_tp_num == "50" ~ "ME - Rider 51J",
+      me_tp_num == "51" ~ "FS - SNAP",
+      me_tp_num == "52" ~ "FS - SSI",
+      me_tp_num == "55" ~ "MA - Medically Needy",
+      me_tp_num == "56" ~ "MA - MN w/Spend Down",
+      me_tp_num == "57" ~ "MA - State Foster Care - D",
+      me_tp_num == "58" ~ "MA - State Foster Care - JPC",
+      me_tp_num == "59" ~ "THLW",
+      me_tp_num == "60" ~ "TANF Grandparent Payment",
+      me_tp_num == "61" ~ "TANF State Program",
+      me_tp_num == "62" ~ "State Paid Coverage",
+      me_tp_num == "63" ~ "CBA",
+      me_tp_num == "64" ~ "DBMD",
+      me_tp_num == "65" ~ "HCS",
+      me_tp_num == "66" ~ "MA - MBCC Presumptive",
+      me_tp_num == "67" ~ "MA - MBCC",
+      me_tp_num == "68" ~ "PACE",
+      me_tp_num == "69" ~ "LTC - TLC",
+      me_tp_num == "70" ~ "MTFCY",
+      me_tp_num == "71" ~ "OTTANF - 1 Adult",
+      me_tp_num == "72" ~ "OTTANF - 2 Parents",
+      me_tp_num == "73" ~ "CC - CCAD Adult Foster Care",
+      me_tp_num == "74" ~ "CC - CCAD Case Management Services",
+      me_tp_num == "75" ~ "CC - CCAD CMPAS",
+      me_tp_num == "76" ~ "CC - CCAD DAHS Title XIX",
+      me_tp_num == "77" ~ "Health Care - FFCHE",
+      me_tp_num == "78" ~ "PCA Medicaid - Federal Match - No Cash",
+      me_tp_num == "79" ~ "PCA Medicaid  - No Federal Match - No Cash",
+      me_tp_num == "80" ~ "PCA Medicaid - Federal Match - With Cash",
+      me_tp_num == "81" ~ "PCA Medicaid - No Federal Match - With Cash",
+      me_tp_num == "82" ~ "MA - FFCC",
+      me_tp_num == "83" ~ "MA FFCC - Presumptive",
+      me_tp_num == "84" ~ "CI - CHIP",
+      me_tp_num == "85" ~ "CI - CHIP Perinatal",
+      me_tp_num == "86" ~ "MA Parents and Caretaker Relatives Presumptive",
+      me_tp_num == "87" ~ "ME-Medicaid Buy In",
+      me_tp_num == "88" ~ "ME - MBIC",
+      me_tp_num == "89" ~ "STAR+Plus Programs",
+      me_tp_num == "90" ~ "MA - State Foster Care",
+      me_tp_num == "91" ~ "Adoption Assistance - Federal Match - No Cash",
+      me_tp_num == "92" ~ "Adoption Assistance - Federal Match - With Cash",
+      me_tp_num == "93" ~ "Foster Care - Federal Match - No Cash",
+      me_tp_num == "94" ~ "Foster Care - Federal Match - With Cash",
+      me_tp_num == "95" ~ "Adoption Assistance - No Federal Match - No Cash",
+      me_tp_num == "96" ~ "Adoption Assistance - No Federal Match - With Cash",
+      me_tp_num == "97" ~ "Foster Care - No Federal Match - No Cash",
+      me_tp_num == "98" ~ "Foster Care - No Federal Match - With Cash",
+      me_tp_num == "99" ~ "MA - Non-AFDC Foster Care",
+      is.na(me_tp_num) ~ NA_character_,
+      TRUE ~ paste0("UNKNOWN CODE: ", me_tp_num)
+    )
+  )
+
+```
+
+
+
+```{r clean-data}
+
+# Filter Data
+episodes <- 
+  all.df %>%
+  mutate(
+    age_group = case_when(
+    age <= 18 ~ "0-18",
+    age >= 19 & age <= 24 ~ "19-24",
+    age >= 25 & age <= 34 ~ "25-34",
+    age >= 35 & age <= 44 ~ "35-44",
+    age >= 45 & age <= 55 ~ "45-55",
+    TRUE ~ NA_character_
+  ),
+     state_tx = case_when(
+      state == "TX" ~ "TX",
+      state != "TX" ~ "Non-TX",
+      TRUE ~ "Unknown"
+    )
+  ) %>%
+  mutate(los_less_60 = case_when(
+    los <= 60 ~ 1,
+    TRUE ~ 0
+  )) %>%
+  mutate(monthly_anchor_date = as.Date(format(anchor_date, "%Y-%m-01")))
+
+
+```
+
+```{r filter-cohort-overall}
+cohort <- 
+episodes %>% filter(age >= 19)
+```
+
+```{r add-time-vars}
+
+# Counters and anchor dates (START AT 0)
+cohort <- cohort %>%
+  mutate(
+    week_counter = as.integer(difftime(anchor_date, as.Date("2019-01-01"), units = "weeks")),
+    biweekly_counter = as.integer(difftime(anchor_date, as.Date("2019-01-01"), units = "days") / 14),
+    monthly_counter = as.integer(difftime(anchor_date, as.Date("2019-01-01"), units = "days") / 30),
+
+    anchor_date_week     = as.Date("2019-01-01") + week_counter * 7,
+    anchor_date_twoweeks = as.Date("2019-01-01") + biweekly_counter * 14,
+    anchor_date_month    = floor_date(anchor_date, unit = "month")
+  )
+
+# Create time periods
+time_periods <- tibble::tibble(
+  period = factor(
+    c("Pre_period", "FFCRA", "Unwinding", "Exposure_Unwinding"),
+    levels = c("Pre_period", "FFCRA", "Unwinding", "Exposure_Unwinding")
+  ),
+  start = as.Date(c("2019-01-01", "2020-01-01", "2023-04-01", "2022-04-01")),
+  end   = as.Date(c("2019-12-31", "2022-03-31", "2023-08-31", "2023-08-31"))
+)
+
+# COVID period for sensitivity analysis (kept separate)
+covid_period <- tibble::tibble(
+  period = "COVID",
+  start  = as.Date("2020-03-01"),
+  end    = as.Date("2020-12-31")
+)
+
+# Create separate df for graphs later on
+period_rects <- time_periods %>%
+  select(start, end, period)
+
+# Get a date twelve months before end of FY24
+twelve_months_before <- as.Date("2024-08-31") %m-% months(12)
+
+# Create indicators
+# note we don't actually use the pre_period one...
+cohort <- cohort %>%
+  mutate(
+    period_Pre = as.integer(
+      anchor_date >= (time_periods %>% filter(period == "Pre_period") %>% pull(start)) &
+      anchor_date <= (time_periods %>% filter(period == "Pre_period") %>% pull(end))
+    ),
+    period_FFCRA = as.integer(
+      anchor_date >= (time_periods %>% filter(period == "FFCRA") %>% pull(start)) &
+      anchor_date <= (time_periods %>% filter(period == "FFCRA") %>% pull(end))
+    ),
+    period_Unwinding = as.integer(
+      anchor_date >= (time_periods %>% filter(period == "Unwinding") %>% pull(start)) &
+      anchor_date <= (time_periods %>% filter(period == "Unwinding") %>% pull(end))
+    ),
+    period_Exposure_Unwinding = as.integer(
+      anchor_date >= (time_periods %>% filter(period == "Exposure_Unwinding") %>% pull(start)) &
+      anchor_date <= (time_periods %>% filter(period == "Exposure_Unwinding") %>% pull(end))
+    ),
+    period_COVID = as.integer(
+      anchor_date >= (covid_period %>% pull(start)) &
+      anchor_date <= (covid_period %>% pull(end))
+    )
+  )
+
+```
+
+```{r}
+
+TOP_N   <- 15
+TIME_VAR <- "monthly_counter"   # change to "week_counter" or "biweekly_counter" if you want
+
+# -------------------------
+# 0) Prep + filter to rows with time
+# -------------------------
+cohort2 <- cohort %>%
+  filter(!is.na(.data[[TIME_VAR]]))
+
+
+# -------------------------
+# 1) Top-N collapse for me_code_label
+# -------------------------
+top_me_code <- cohort2 %>%
+  count(me_code_label, sort = TRUE) %>%
+  slice_head(n = TOP_N) %>%
+  pull(me_code_label)
+
+cohort2 <- cohort2 %>%
+  mutate(
+    me_code_plot = if_else(me_code_label %in% top_me_code, me_code_label, "Other"),
+    me_code_plot = if_else(is.na(me_code_plot), "Missing", me_code_plot)
+  )
+
+# -------------------------
+# 2) Top-N collapse for riskgrp_label
+# -------------------------
+top_riskgrp <- cohort2 %>%
+  count(riskgrp_label, sort = TRUE) %>%
+  slice_head(n = TOP_N) %>%
+  pull(riskgrp_label)
+
+cohort2 <- cohort2 %>%
+  mutate(
+    riskgrp_plot = if_else(riskgrp_label %in% top_riskgrp, riskgrp_label, "Other"),
+    riskgrp_plot = if_else(is.na(riskgrp_plot), "Missing", riskgrp_plot)
+  )
+
+# -------------------------
+# 3) Top-N collapse for me_tp_label
+# -------------------------
+top_me_tp <- cohort2 %>%
+  count(me_tp_label, sort = TRUE) %>%
+  slice_head(n = TOP_N) %>%
+  pull(me_tp_label)
+
+cohort2 <- cohort2 %>%
+  mutate(
+    me_tp_plot = if_else(me_tp_label %in% top_me_tp, me_tp_label, "Other"),
+    me_tp_plot = if_else(is.na(me_tp_plot), "Missing", me_tp_plot)
+  )
+
+# -------------------------
+# 4) Summaries over time: counts + proportions
+# -------------------------
+me_code_time <- cohort2 %>%
+  group_by(.data[[TIME_VAR]], me_code_plot) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(.data[[TIME_VAR]]) %>%
+  mutate(prop = n / sum(n)) %>%
+  ungroup() %>%
+  rename(time = 1, category = 2)
+
+riskgrp_time <- cohort2 %>%
+  group_by(.data[[TIME_VAR]], riskgrp_plot) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(.data[[TIME_VAR]]) %>%
+  mutate(prop = n / sum(n)) %>%
+  ungroup() %>%
+  rename(time = 1, category = 2)
+
+me_tp_time <- cohort2 %>%
+  group_by(.data[[TIME_VAR]], me_tp_plot) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(.data[[TIME_VAR]]) %>%
+  mutate(prop = n / sum(n)) %>%
+  ungroup() %>%
+  rename(time = 1, category = 2)
+
+# -------------------------
+# 5) Plots (stacked area shares)
+# -------------------------
+p_me_code <- ggplot(me_code_time %>% filter(prop > 0.009), aes(x = time, y = prop, fill = category)) +
+  geom_area() +
+  labs(title = "Enrollment mix over time: me_code_label", x = TIME_VAR, y = "Share") +
+  theme_minimal()
+
+p_riskgrp <- ggplot(riskgrp_time %>% filter(prop > 0.009), aes(x = time, y = prop, fill = category)) +
+  geom_area() +
+  labs(title = "Enrollment mix over time: riskgrp_label", x = TIME_VAR, y = "Share") +
+  theme_minimal()
+
+p_me_tp <- ggplot(me_tp_time %>% filter(prop > 0.009), aes(x = time, y = prop, fill = category)) +
+  geom_area() +
+  labs(title = "Enrollment mix over time: me_tp_label", x = TIME_VAR, y = "Share") +
+  theme_minimal()
+
+```
+
+# Risk Group
+
+```{r}
+p_riskgrp
+
+```
+
+{{< pagebreak >}}
+
+# ME_TP
+
+```{r}
+p_me_tp
+```
+
+{{< pagebreak >}}
+
+# ME_CODE 
+
+```{r}
+p_me_code
+
+```
+
+{{< pagebreak >}}
+
+# Table Version
+
+```{r}
+# -------------------------
+# 6) Table 1 overall
+# -------------------------
+t1_overall <- cohort2 %>%
+  select(age, me_code_plot, riskgrp_plot, me_tp_plot) %>%
+  tbl_summary()
+
+t1_overall %>%
+  as_flex_table() %>%
+  theme_box() %>%
+  padding(padding = 1.5) %>%
+  autofit() %>%
+  FitFlextableToPage()
+
+
+```
+
+{{< pagebreak >}}
+
+# By Time
+
+```{r}
+# -------------------------
+# 7) Table 1 by policy period
+# -------------------------
+cohort3 <- cohort2 %>%
+  mutate(
+    period = case_when(
+      period_Pre == 1 ~ "Pre",
+      period_FFCRA == 1 ~ "FFCRA",
+      period_Exposure_Unwinding == 1 ~ "Exposure",
+      TRUE ~ "Other/NA"
+    )
+  )
+
+t1_by_period <- cohort3 %>%
+  select(period, age, me_code_plot, riskgrp_plot, me_tp_plot) %>%
+  tbl_summary(by = period)
+
+t1_by_period %>%
+  as_flex_table() %>%
+  theme_box() %>%
+  padding(padding = 1.5) %>%
+  autofit() %>%
+  FitFlextableToPage()
+
+```
+
+{{< pagebreak >}}
+
+# Filter for MH 
+
+```{r}
+cohort4 <- 
+cohort3 %>% filter(mh_sample==1)
+
+```
+
+```{r}
+cohort4 %>%
+  select(period, yr, age, me_code_plot, riskgrp_plot, me_tp_plot) %>%
+  tbl_summary(by = period) %>%
+  add_overall() %>%
+  as_flex_table() %>%
+  theme_box() %>%
+  padding(padding = 1.5) %>%
+  autofit() %>%
+  FitFlextableToPage()
+
+```
+
