@@ -408,8 +408,6 @@ join research_dev.poem_episodes_anchordates b
  
 
 
-
-
 /*
  * Create smaller extract tables
  * We want to limit to the medicaid payor code

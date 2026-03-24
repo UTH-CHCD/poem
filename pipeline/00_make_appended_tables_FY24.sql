@@ -207,10 +207,12 @@ update statistics CHCDWORK.dbo.enc_proc;
 --- enrl 
 drop table if exists CHCDWORK.dbo.enrl;
 
-select * 
+select distinct * 
 into CHCDWORK.dbo.enrl
 from 
 (
+select * from MEDICAID.dbo.ENRL_2019_HTW
+union all 
 select * from MEDICAID.dbo.ENRL_2019 
 union all 
 select * from MEDICAID.dbo.ENRL_2020

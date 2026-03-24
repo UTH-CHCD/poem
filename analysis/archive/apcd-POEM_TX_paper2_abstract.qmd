@@ -1,0 +1,601 @@
+---
+title: "POEM TX Paper 2 (APCD Data) - MH Abstract ITS Results"
+date: today
+format: 
+  docx:
+    df-print: paged
+    page-layout: full
+    fig-width: 12
+    fig-height: 8
+    out-width: 100%
+  html:
+    fig-width: 12
+    fig-height: 8
+editor: source
+execute: 
+  echo: false
+  warning: false
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup}
+#| echo: false
+#| warning: false
+
+# Load packages 
+pacman::p_load(RPostgres, DBI, keyring, janitor, tidyverse, readxl,
+               gtsummary, ggplot2, labelled, clipr, viridis, ggrepel, scales, ggthemes, flextable,
+               odbc, openxlsx, beepr, tictoc, here, lubridate, patchwork, cowplot,
+               sandwich, lmtest, broom)
+
+#### Setup File Paths ####
+current_dir <- here::here()
+
+#### Database Connection 
+greenplum_user = "jwozny"
+
+apcd <- dbConnect(RPostgres::Postgres(),
+                 dbname = "apcd_dev",
+                 user = "jwozny",
+                 password = key_get("apcd_dev", greenplum_user),
+                 host = "spgpcdplv001",
+                 bigint = "integer")
+
+options(scipen = 999)
+
+# Set Themes
+my_theme <- function() {
+  theme_minimal(base_size = 10) +
+    theme(
+      text = element_text(family = "sans", size=14),
+      axis.text.y = element_text(size = 12, face="plain", margin = margin(r = 10, unit = "pt")),
+      axis.title.y = element_text(size = 13, face = "bold", margin = margin(r = 20, unit = "pt")),
+      axis.title.x = element_text(size = 13, face = "bold", margin = margin(t = 20, unit = "pt")),
+      plot.caption = element_text(size = 12, face = "italic", margin = margin(t = 20, r=20, b = 5, l=20, unit = "pt"))
+    )
+}
+
+set_flextable_defaults(padding=2.5)
+theme_set(my_theme())
+
+FitFlextableToPage <- function(ft, pgwidth = 6.5){
+  ft_out <- ft %>% autofit()
+  ft_out <- width(ft_out, width = dim(ft_out)$widths*pgwidth /(flextable_dim(ft_out)$widths))
+  return(ft_out)
+}
+
+# Table helpers (from paper 1)
+mk_tbl <- function(fit) {
+  tbl_regression(
+    fit,
+    intercept    = TRUE,
+    pvalue_fun   = ~ style_pvalue(.x, digits = 3),
+    estimate_fun = ~ style_number(.x, digits = 3),
+    conf.int     = FALSE
+  ) |>
+    add_significance_stars(hide_p = TRUE, pattern = "{estimate}{stars}") |>
+    modify_column_hide(columns = c(std.error))
+}
+
+compare_models <- function(model_names, spanners) {
+  tbls <- lapply(model_names, function(nm) mk_tbl(models[[nm]]))
+  tbl_merge(tbls = tbls, tab_spanner = spanners)
+}
+
+fmt_fun <- function(x) style_number(x, digits = 3)
+```
+
+```{r get-data}
+
+all.df <- dbGetQuery(apcd, "
+  select * from research_dev.poem_cohort_analysis2
+;")
+
+# Replace NAs
+all.df[sapply(all.df, is.numeric)] <- 
+  lapply(all.df[sapply(all.df, is.numeric)], function(x) ifelse(is.na(x), 0, x))
+```
+
+```{r clean-data}
+
+episodes <- 
+  all.df %>%
+  mutate(
+    age_group = case_when(
+      age <= 18 ~ "0-18",
+      age >= 19 & age <= 24 ~ "19-24",
+      age >= 25 & age <= 34 ~ "25-34",
+      age >= 35 & age <= 44 ~ "35-44",
+      age >= 45 & age <= 55 ~ "45-55",
+      TRUE ~ NA_character_
+    ),
+    state_tx = case_when(
+      state == "TX" ~ "TX",
+      state != "TX" ~ "Non-TX",
+      TRUE ~ "Unknown"
+    )
+  ) %>%
+  mutate(race_desc = recode(race_1,
+    "R5" = "White",
+    "R9" = "Other Race",
+    "R1" = "American Indian/Alaska Native",
+    "R2" = "Asian",
+    "R3" = "Black/African American",
+    "UN" = "Unknown/Not Specified",
+    "R4" = "Native Hawaiian or Other Pacific Islander",
+    .default = NA_character_
+  )) %>%
+  mutate(
+    los_less_60 = case_when(los <= 60 ~ 1, TRUE ~ 0),
+    monthly_anchor_date = as.Date(format(anchor_date, "%Y-%m-01"))
+  ) %>%
+  mutate(
+    me_desc = case_when(
+      me_code == "B" ~ "Pregnancy",
+      me_code == "C" ~ "Emergency",
+      me_code == "D" ~ "Other",
+      me_code == "F" ~ "Other",
+      me_code == "I" ~ "Institutional regular (CATS 1 3 or 4) (BP16 or 17)",
+      me_code == "N" ~ "FFCHE (Former Foster Child in Higher Education)",
+      me_code == "P" ~ "Three months prior",
+      me_code == "Q" ~ "QMD coverage (Medicare only)",
+      me_code == "R" ~ "Regular",
+      me_code == "T" ~ "1929(b) Base plan 20 MAO client",
+      me_code == "W" ~ "Healthy Texas Women",
+      TRUE ~ "Unknown"
+    )
+  )
+```
+
+```{r filter-cohort}
+
+cohort <- 
+  episodes %>% 
+  filter(age >= 19 & age <= 55) %>%
+  filter(enrolled_birth == 1) %>%
+  filter(state_tx == "TX") %>% 
+  filter(los <= 60) %>%
+  filter(prim_med_plan_mon == "Medicaid") %>%
+  filter(prim_med_plan_design_mon != "HTW") %>%
+  mutate(
+    enroll_group = case_when(
+      me_code == "R" ~ "Regular",
+      me_code == "C" ~ "Emergency",
+      TRUE ~ NA_character_
+    ),
+    treated = case_when(
+      me_code == "R" ~ 1L,
+      me_code == "C" ~ 0L,
+      TRUE ~ NA_integer_
+    )
+  ) %>%
+  filter(!is.na(enroll_group))
+```
+
+```{r add-time-vars}
+
+cohort <- cohort %>%
+  mutate(
+    week_counter     = as.integer(difftime(anchor_date, as.Date("2019-01-01"), units = "weeks")),
+    biweekly_counter = as.integer(difftime(anchor_date, as.Date("2019-01-01"), units = "days") / 14),
+    monthly_counter  = as.integer(difftime(anchor_date, as.Date("2019-01-01"), units = "days") / 30),
+    anchor_date_week      = as.Date("2019-01-01") + week_counter * 7,
+    anchor_date_twoweeks  = as.Date("2019-01-01") + biweekly_counter * 14,
+    anchor_date_month     = floor_date(anchor_date, unit = "month")
+  )
+
+time_periods <- tibble::tibble(
+  period = factor(
+    c("Pre_period", "FFCRA", "Unwinding", "Exposure_Unwinding"),
+    levels = c("Pre_period", "FFCRA", "Unwinding", "Exposure_Unwinding")
+  ),
+  start = as.Date(c("2019-01-01", "2020-01-01", "2023-04-01", "2022-04-01")),
+  end   = as.Date(c("2019-12-31", "2022-03-31", "2023-08-31", "2023-08-31"))
+)
+
+covid_period <- tibble::tibble(
+  period = "COVID",
+  start  = as.Date("2020-03-01"),
+  end    = as.Date("2020-12-31")
+)
+
+period_rects <- time_periods %>% select(start, end, period)
+
+period_starts <- time_periods %>%
+  select(date = start, period) %>%
+  arrange(date) %>%
+  mutate(period = factor(period, levels = period))
+
+# Period start times (biweekly counter)
+ffcra_start_t <- as.integer(
+  difftime(time_periods %>% filter(period == "FFCRA") %>% pull(start),
+           as.Date("2019-01-01"), units = "days") / 14
+)
+
+twelve_months_before <- as.Date("2025-08-31") %m-% months(12)
+
+cohort <- cohort %>%
+  mutate(
+    period_Pre = as.integer(
+      anchor_date >= (time_periods %>% filter(period == "Pre_period") %>% pull(start)) &
+      anchor_date <= (time_periods %>% filter(period == "Pre_period") %>% pull(end))
+    ),
+    period_FFCRA = as.integer(
+      anchor_date >= (time_periods %>% filter(period == "FFCRA") %>% pull(start)) &
+      anchor_date <= (time_periods %>% filter(period == "FFCRA") %>% pull(end))
+    )
+  ) %>%
+  mutate(
+    t = biweekly_counter,
+    t_after_FFCRA = pmax(0, t - ffcra_start_t)
+  )
+
+# Filter to Pre + FFCRA periods only
+cohort_its <- cohort %>%
+  filter(period_Pre == 1 | period_FFCRA == 1) %>%
+  filter(anchor_date <= twelve_months_before) %>%
+  mutate(period_label = if_else(period_Pre == 1, "Pre (2019)", "FFCRA (2020-Mar 2022)"))
+
+# Regular Medicaid only (treated) - main ITS
+cohort_its_reg  <- cohort_its %>% filter(treated == 1)
+mh.subgroup     <- cohort_its_reg %>% filter(mh_sample == 1)
+
+# Emergency Medicaid only (control)
+cohort_its_emg  <- cohort_its %>% filter(treated == 0)
+mh.subgroup_emg <- cohort_its_emg %>% filter(mh_sample == 1)
+
+# Both groups pooled - DiD ITS
+cohort_its_did  <- cohort_its
+mh.subgroup_did <- cohort_its_did %>% filter(mh_sample == 1)
+```
+
+
+# Descriptive Tables
+
+## Table 1: Service Utilization by Period
+
+N (%) receiving each service in the Pre and FFCRA periods, for Regular Medicaid overall and the MH subgroup.
+
+```{r }
+
+desc_vars <- c("out_mh_drug_12", "out_therapy_12")
+desc_labels <- list(
+  out_mh_drug_12 ~ "MH Prescription (0-12 months)",
+  out_therapy_12 ~ "Therapy Session (0-12 months)"
+)
+
+# Overall cohort by period
+tbl_overall <- cohort_its_reg %>%
+  select(period_label, all_of(desc_vars)) %>%
+  tbl_summary(
+    by = period_label,
+    statistic = all_of(desc_vars) ~ "{n} ({p}%)",
+    digits = all_of(desc_vars) ~ c(0, 1),
+    label = desc_labels
+  ) %>%
+  add_overall() %>%
+  modify_spanning_header(all_stat_cols() ~ "**Overall Cohort (Regular Medicaid)**")
+
+# MH subgroup by period
+tbl_mh <- mh.subgroup %>%
+  select(period_label, all_of(desc_vars)) %>%
+  tbl_summary(
+    by = period_label,
+    statistic = all_of(desc_vars) ~ "{n} ({p}%)",
+    digits = all_of(desc_vars) ~ c(0, 1),
+    label = desc_labels
+  ) %>%
+  add_overall() %>%
+  modify_spanning_header(all_stat_cols() ~ "**MH Subgroup (Regular Medicaid)**")
+
+tbl_merge(
+  list(tbl_overall, tbl_mh),
+  tab_spanner = c("**Overall Cohort**", "**MH Subgroup**")
+) %>%
+  as_flex_table() %>%
+  theme_box() %>%
+  padding(padding = 1.5) %>%
+  FitFlextableToPage()
+```
+
+{{< pagebreak >}}
+
+# Descriptive Figures
+
+## MH Prescriptions 0-12 Months Postpartum
+
+```{r fig-drug}
+#| fig-height: 6
+
+bind_rows(
+  cohort_its_reg %>%
+    group_by(anchor_date_twoweeks) %>%
+    summarise(rate = mean(out_mh_drug_12, na.rm = TRUE), .groups = "drop") %>%
+    mutate(group = "Overall Cohort"),
+  mh.subgroup %>%
+    group_by(anchor_date_twoweeks) %>%
+    summarise(rate = mean(out_mh_drug_12, na.rm = TRUE), .groups = "drop") %>%
+    mutate(group = "MH Subgroup")
+) %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = rate, color = group)) +
+  geom_line(linewidth = 1) +
+  geom_vline(xintercept = as.Date("2020-01-01"),
+             linetype = "dashed", color = "gray40", linewidth = 0.75) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  scale_color_manual(values = c("Overall Cohort" = "#1f77b4", "MH Subgroup" = "#ff7f0e")) +
+  annotate("text", x = as.Date("2020-02-01"), y = 0.95,
+           label = "FFCRA Start", hjust = 0, size = 3.5, color = "gray40") +
+  labs(
+    title = "MH Prescription 0-12 Months Postpartum",
+    subtitle = "Regular Medicaid, Pre and FFCRA periods",
+    x = "Date", y = "% Episodes with MH Prescription", color = NULL
+  )
+```
+
+{{< pagebreak >}}
+
+## Therapy Sessions 0-12 Months Postpartum
+
+```{r fig-therapy}
+#| fig-height: 6
+
+bind_rows(
+  cohort_its_reg %>%
+    group_by(anchor_date_twoweeks) %>%
+    summarise(rate = mean(out_therapy_12, na.rm = TRUE), .groups = "drop") %>%
+    mutate(group = "Overall Cohort"),
+  mh.subgroup %>%
+    group_by(anchor_date_twoweeks) %>%
+    summarise(rate = mean(out_therapy_12, na.rm = TRUE), .groups = "drop") %>%
+    mutate(group = "MH Subgroup")
+) %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = rate, color = group)) +
+  geom_line(linewidth = 1) +
+  geom_vline(xintercept = as.Date("2020-01-01"),
+             linetype = "dashed", color = "gray40", linewidth = 0.75) +
+  scale_y_continuous(labels = percent, limits = c(0, .5)) +
+  scale_color_manual(values = c("Overall Cohort" = "#1f77b4", "MH Subgroup" = "#ff7f0e")) +
+  annotate("text", x = as.Date("2020-02-01"), y = 0.48,
+           label = "FFCRA Start", hjust = 0, size = 3.5, color = "gray40") +
+  labs(
+    title = "Therapy Sessions 0-12 Months Postpartum",
+    subtitle = "Regular Medicaid, Pre and FFCRA periods",
+    x = "Date", y = "% Episodes with Therapy Session", color = NULL
+  )
+```
+
+{{< pagebreak >}}
+
+# ITS Models (Pre vs. FFCRA)
+
+Specification: `outcome ~ t + period_FFCRA + t_after_FFCRA [+ age + no_transfusion_weight]`
+
+- `t`: biweekly time counter (pre-trend)
+- `period_FFCRA`: level shift at FFCRA start (Jan 2020)
+- `t_after_FFCRA`: slope change after FFCRA start
+
+```{r fit-models}
+
+models <- list(
+
+  # Regular Medicaid - overall cohort
+  overall_drug_unadj = lm(
+    out_mh_drug_12 ~ t + period_FFCRA + t_after_FFCRA,
+    data = cohort_its_reg
+  ),
+  overall_drug_adj = lm(
+    out_mh_drug_12 ~ t + period_FFCRA + t_after_FFCRA +
+      age + no_transfusion_weight,
+    data = cohort_its_reg
+  ),
+  overall_therapy_unadj = lm(
+    out_therapy_12 ~ t + period_FFCRA + t_after_FFCRA,
+    data = cohort_its_reg
+  ),
+  overall_therapy_adj = lm(
+    out_therapy_12 ~ t + period_FFCRA + t_after_FFCRA +
+      age + no_transfusion_weight,
+    data = cohort_its_reg
+  ),
+
+  # Regular Medicaid - MH subgroup
+  mh_drug_unadj = lm(
+    out_mh_drug_12 ~ t + period_FFCRA + t_after_FFCRA,
+    data = mh.subgroup
+  ),
+  mh_drug_adj = lm(
+    out_mh_drug_12 ~ t + period_FFCRA + t_after_FFCRA +
+      age + no_transfusion_weight,
+    data = mh.subgroup
+  ),
+  mh_therapy_unadj = lm(
+    out_therapy_12 ~ t + period_FFCRA + t_after_FFCRA,
+    data = mh.subgroup
+  ),
+  mh_therapy_adj = lm(
+    out_therapy_12 ~ t + period_FFCRA + t_after_FFCRA +
+      age + no_transfusion_weight,
+    data = mh.subgroup
+  ),
+
+  # DiD ITS - Regular vs Emergency pooled
+  # R stores interactions as period_FFCRA:treated / t_after_FFCRA:treated
+  did_drug_unadj = lm(
+    out_mh_drug_12 ~ t + period_FFCRA + t_after_FFCRA +
+      treated + period_FFCRA:treated + t_after_FFCRA:treated,
+    data = cohort_its_did
+  ),
+  did_drug_adj = lm(
+    out_mh_drug_12 ~ t + period_FFCRA + t_after_FFCRA +
+      treated + period_FFCRA:treated + t_after_FFCRA:treated +
+      age + no_transfusion_weight,
+    data = cohort_its_did
+  ),
+  did_therapy_unadj = lm(
+    out_therapy_12 ~ t + period_FFCRA + t_after_FFCRA +
+      treated + period_FFCRA:treated + t_after_FFCRA:treated,
+    data = cohort_its_did
+  ),
+  did_therapy_adj = lm(
+    out_therapy_12 ~ t + period_FFCRA + t_after_FFCRA +
+      treated + period_FFCRA:treated + t_after_FFCRA:treated +
+      age + no_transfusion_weight,
+    data = cohort_its_did
+  ),
+  did_mh_drug_unadj = lm(
+    out_mh_drug_12 ~ t + period_FFCRA + t_after_FFCRA +
+      treated + period_FFCRA:treated + t_after_FFCRA:treated,
+    data = mh.subgroup_did
+  ),
+  did_mh_drug_adj = lm(
+    out_mh_drug_12 ~ t + period_FFCRA + t_after_FFCRA +
+      treated + period_FFCRA:treated + t_after_FFCRA:treated +
+      age + no_transfusion_weight,
+    data = mh.subgroup_did
+  ),
+  did_mh_therapy_unadj = lm(
+    out_therapy_12 ~ t + period_FFCRA + t_after_FFCRA +
+      treated + period_FFCRA:treated + t_after_FFCRA:treated,
+    data = mh.subgroup_did
+  ),
+  did_mh_therapy_adj = lm(
+    out_therapy_12 ~ t + period_FFCRA + t_after_FFCRA +
+      treated + period_FFCRA:treated + t_after_FFCRA:treated +
+      age + no_transfusion_weight,
+    data = mh.subgroup_did
+  )
+)
+```
+
+## Table 2: ITS Results - Regular Medicaid (Adjusted)
+
+Overall cohort and MH subgroup shown side by side for each outcome.
+
+```{r }
+
+its_labels <- list(
+  t             ~ "Pre-trend",
+  period_FFCRA  ~ "Level Change, FFCRA",
+  t_after_FFCRA ~ "Trend Change, FFCRA"
+)
+its_include <- c("t", "period_FFCRA", "t_after_FFCRA")
+
+mk_its_tbl <- function(model, header) {
+  tbl_regression(model,
+    include      = its_include,
+    label        = its_labels,
+    estimate_fun = fmt_fun
+  ) %>%
+    modify_column_hide(p.value) %>%
+    modify_header(estimate ~ header)
+}
+
+tbl_merge(
+  list(
+    mk_its_tbl(models$overall_drug_adj,   "**Overall** Beta"),
+    mk_its_tbl(models$mh_drug_adj,        "**MH Subgroup** Beta"),
+    mk_its_tbl(models$overall_therapy_adj,"**Overall** Beta"),
+    mk_its_tbl(models$mh_therapy_adj,     "**MH Subgroup** Beta")
+  ),
+  tab_spanner = c(
+    "**MH Prescription**", "**MH Prescription**",
+    "**Therapy Session**",  "**Therapy Session**"
+  )
+) %>%
+  as_flex_table() %>%
+  FitFlextableToPage()
+```
+
+{{< pagebreak >}}
+
+# Difference-in-Differences ITS
+
+Emergency Medicaid (`me_code == "C"`) covers only the delivery hospitalization and is not eligible for the FFCRA postpartum extension, making it a within-state control group. The DiD-ITS pools both groups and interacts the ITS terms with `treated` (Regular = 1). `period_FFCRA:treated` and `t_after_FFCRA:treated` are the DiD estimates - the differential change for Regular vs Emergency after FFCRA, net of shared secular trends.
+
+## Figure: Regular vs Emergency Medicaid
+
+```{r }
+#| fig-height: 8
+
+bind_rows(
+  cohort_its_reg %>%
+    group_by(anchor_date_twoweeks) %>%
+    summarise(drug = mean(out_mh_drug_12, na.rm = TRUE),
+              therapy = mean(out_therapy_12, na.rm = TRUE), .groups = "drop") %>%
+    mutate(group = "Regular (Treated)"),
+  cohort_its_emg %>%
+    group_by(anchor_date_twoweeks) %>%
+    summarise(drug = mean(out_mh_drug_12, na.rm = TRUE),
+              therapy = mean(out_therapy_12, na.rm = TRUE), .groups = "drop") %>%
+    mutate(group = "Emergency (Control)")
+) %>%
+  pivot_longer(cols = c(drug, therapy),
+               names_to = "outcome",
+               values_to = "rate") %>%
+  mutate(outcome = recode(outcome,
+    drug    = "MH Prescription",
+    therapy = "Therapy Session"
+  )) %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = rate, color = group)) +
+  geom_line(linewidth = 1) +
+  geom_vline(xintercept = as.Date("2020-01-01"),
+             linetype = "dashed", color = "gray40", linewidth = 0.75) +
+  scale_y_continuous(labels = percent) +
+  scale_color_manual(values = c("Regular (Treated)" = "#1f77b4",
+                                "Emergency (Control)" = "#d62728")) +
+  facet_wrap(~ outcome, scales = "free_y", ncol = 1) +
+  annotate("text", x = as.Date("2020-02-01"), y = Inf,
+           label = "FFCRA Start", hjust = 0, vjust = 1.5, size = 3.5, color = "gray40") +
+  labs(
+    title = "MH Service Use: Regular vs Emergency Medicaid",
+    subtitle = "Overall cohort, Pre and FFCRA periods",
+    x = "Date", y = "% Episodes", color = NULL
+  ) +
+  theme(strip.text = element_text(size = 12, face = "bold"))
+```
+
+{{< pagebreak >}}
+
+## Table 3: DiD ITS Results - Adjusted
+
+`period_FFCRA:treated` and `t_after_FFCRA:treated` are the key DiD estimates.
+
+```{r }
+
+did_labels <- list(
+  t                       ~ "Pre-trend",
+  period_FFCRA            ~ "Level Change, FFCRA (Control)",
+  t_after_FFCRA           ~ "Trend Change, FFCRA (Control)",
+  treated                 ~ "Regular vs Emergency (baseline)",
+  `period_FFCRA:treated`  ~ "DiD Level Change, FFCRA",
+  `t_after_FFCRA:treated` ~ "DiD Trend Change, FFCRA"
+)
+did_include <- c("t", "period_FFCRA", "t_after_FFCRA",
+                 "treated", "period_FFCRA:treated", "t_after_FFCRA:treated")
+
+mk_did_tbl <- function(model, header) {
+  tbl_regression(model,
+    include      = did_include,
+    label        = did_labels,
+    estimate_fun = fmt_fun
+  ) %>%
+    modify_column_hide(p.value) %>%
+    modify_header(estimate ~ header)
+}
+
+tbl_merge(
+  list(
+    mk_did_tbl(models$did_drug_adj,       "**Overall** Beta"),
+    mk_did_tbl(models$did_mh_drug_adj,    "**MH Subgroup** Beta"),
+    mk_did_tbl(models$did_therapy_adj,    "**Overall** Beta"),
+    mk_did_tbl(models$did_mh_therapy_adj, "**MH Subgroup** Beta")
+  ),
+  tab_spanner = c(
+    "**MH Prescription**", "**MH Prescription**",
+    "**Therapy Session**",  "**Therapy Session**"
+  )
+) %>%
+  as_flex_table() %>%
+  FitFlextableToPage()
+```

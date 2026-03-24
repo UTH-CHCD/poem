@@ -99,7 +99,7 @@
 <title>H</title>
 <polygon fill="#d3d3d3" stroke="#000000" points="450,-41.4019 234,-41.4019 234,-.1981 450,-.1981 450,-41.4019"/>
 <text text-anchor="middle" x="342" y="-25" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">Hypertension sample</text>
-<text text-anchor="middle" x="342" y="-8.2" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">(n = 156524)</text>
+<text text-anchor="middle" x="342" y="-8.2" font-family="Helvetica,sans-Serif" font-size="14.00" fill="#000000">(n = 156525)</text>
 </g>
 <!-- F&#45;&gt;H -->
 <g id="edge7" class="edge">

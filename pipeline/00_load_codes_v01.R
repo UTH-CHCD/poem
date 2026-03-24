@@ -115,6 +115,15 @@ colnames(mh.dx) <- c("mh_category", "icd_dx")
 # check encoding
 find_funky_characters(mh.dx)
 
+
+# Get NDC For MH
+ndc.raw <- read_excel(excel.path.mh, sheet = "Mental Health NDC long") %>% clean_names() 
+
+ndc <- ndc.raw %>%
+  mutate(ndc = str_pad(ndc_code, width = 11, side = "left", pad = "0"))
+
+
+
 ################################
 #### Load Data to SPC ####
 ################################
@@ -218,5 +227,24 @@ dbWriteTable(
   overwrite = TRUE
 )
 
-# Close connection
-dbDisconnect(apcd)
+
+# =========================
+# MH NDC
+# =========================
+table_id <- Id(schema = schema_name, table = "poem_mh_ndc")
+
+if (dbExistsTable(apcd, table_id)) {
+  dbRemoveTable(apcd, table_id)
+}
+
+dbWriteTable(
+  apcd,
+  table_id,
+  ndc,
+  overwrite = TRUE
+)
+
+
+
+
+

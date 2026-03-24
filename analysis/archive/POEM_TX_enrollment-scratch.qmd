@@ -385,7 +385,7 @@ episodes <-
 
 ```{r filter-cohort-overall}
 cohort <- 
-episodes 
+episodes %>% filter(age >= 19)
 ```
 
 ```{r add-time-vars}
@@ -644,8 +644,9 @@ cohort3 %>% filter(mh_sample==1)
 
 ```{r}
 cohort4 %>%
-  select(period, age, me_code_plot, riskgrp_plot, me_tp_plot) %>%
+  select(period, yr, age, me_code_plot, riskgrp_plot, me_tp_plot) %>%
   tbl_summary(by = period) %>%
+  add_overall() %>%
   as_flex_table() %>%
   theme_box() %>%
   padding(padding = 1.5) %>%

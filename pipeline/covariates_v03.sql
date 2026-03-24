@@ -234,7 +234,15 @@ SELECT
     CASE 
         WHEN COUNT(b.clm_from_date) > 0 THEN 1 
         ELSE 0 
-    END AS mh_sample
+    END AS mh_sample,
+    MAX(CASE WHEN b.mh_category = 'Anxiety and fear-related disorders'               THEN 1 ELSE 0 END) AS mh_anxiety,
+    MAX(CASE WHEN b.mh_category = 'Depressive disorders'                              THEN 1 ELSE 0 END) AS mh_depression,
+    MAX(CASE WHEN b.mh_category = 'Suicidal ideation/attempt/intentional self-harm'  THEN 1 ELSE 0 END) AS mh_suicidal,
+    MAX(CASE WHEN b.mh_category = 'Schizophrenia spectrum/other pyschotic disorders' THEN 1 ELSE 0 END) AS mh_schizophrenia,
+    MAX(CASE WHEN b.mh_category = 'Trauma- and stressor-related disorders'           THEN 1 ELSE 0 END) AS mh_trauma,
+    MAX(CASE WHEN b.mh_category = 'Bipolar and related disorders'                    THEN 1 ELSE 0 END) AS mh_bipolar,
+    MAX(CASE WHEN b.mh_category = 'Other - neurodevelopmental disorders'             THEN 1 ELSE 0 END) AS mh_neurodevelopmental,
+    MAX(CASE WHEN b.mh_category = 'Other - other disorders'                          THEN 1 ELSE 0 END) AS mh_other
 INTO CHCDWORK.dbo.poem_cohort_mh_sample
 FROM CHCDWORK.dbo.poem_cohort a
 LEFT JOIN CHCDWORK.dbo.poem_cohort_subgroup_mh1 b 

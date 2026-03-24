@@ -1,5 +1,5 @@
 ---
-title: "POEM TX Paper 1"
+title: "POEM TX Paper 1 (APCD Data)"
 date: today
 format: 
   docx:
@@ -27,16 +27,22 @@ editor_options:
 # Load packages 
 pacman::p_load(RPostgres, DBI, keyring, janitor, tidyverse, readxl,
                gtsummary, ggplot2, labelled, clipr, viridis, ggrepel, scales, ggthemes, flextable, DiagrammeR,
-               odbc, openxlsx, beepr, tictoc, here, sandwich, lmtest, lubridate, patchwork, ggnewscale, cowplot, broom)
+               odbc, openxlsx, beepr, tictoc, here, sandwich, lmtest, lubridate, patchwork, ggnewscale, cowplot)
 
 #### Setup File Paths ####
 # Get the location of this current .R file 
 current_dir <- here::here()
 
 #### Database Connection 
-spc <- dbConnect(odbc::odbc(),
-	 dsn = "SPC",
-	 bigint = "integer")
+greenplum_user = "jwozny" #this is for keyring to go get your password info so you don't have to write it in the file
+
+#Connect to Greenplum
+apcd <- dbConnect(RPostgres::Postgres(),
+                 dbname = "apcd_dev",
+                 user = "jwozny",
+                 password = key_get("apcd_dev", greenplum_user),
+                 host = "spgpcdplv001",
+                 bigint = "integer")
 
 options(scipen = 999)
 
@@ -72,8 +78,8 @@ FitFlextableToPage <- function(ft, pgwidth = 6.5){
 ```{r get-outcomes}
 
 # Get from DB
-all.df <- dbGetQuery(spc, " 
-  select * from chcdwork.dbo.poem_cohort_analysis1 
+all.df <- dbGetQuery(apcd, " 
+  select * from research_dev.poem_cohort_analysis1 
  ;")
 
 # Replace NAs
@@ -84,43 +90,10 @@ all.df[sapply(all.df, is.numeric)] <-
 
 ```{r clean-data}
 
-# Filter Data
+# Grab Data 
 episodes <- 
   all.df %>%
   mutate(
-    hispanic = case_when(
-      race_cd == 3 ~ 1,
-      TRUE ~ 0
-    )
-  ) %>% mutate(
-    race_desc = case_when(
-      race_cd == 1 ~ "White, non-Hispanic",
-      race_cd == 2 ~ "Black, non-Hispanic",
-      race_cd == 3 ~ "Hispanic",
-      race_cd == 4 ~ "American Indian or Alaskan",
-      race_cd == 5 ~ "Asian, Pacific Islander",
-      race_cd == 6 ~ "Unknown/Other",
-      TRUE ~  "Unknown/Other"
-    ),
-    me_desc = case_when(
-      me_code == "B" ~ "Pregnancy",
-      me_code == "C" ~ "Emergency",
-      me_code == "D" ~ "Other",
-      me_code == "F" ~ "Other",
-      me_code == "I" ~ "Institutional regular (CATS 1 3 or 4) (BP16 or 17)",
-      me_code == "N" ~ "FFCHE (Former Foster Child in Higher Education)",
-      me_code == "P" ~ "Three months prior",
-      me_code == "Q" ~ "QMD coverage (Medicare only)",
-      me_code == "R" ~ "Regular",
-      me_code == "T" ~ "1929(b) Base plan 20 MAO client",
-      me_code == "W" ~ "Healthy Texas Women",
-      TRUE ~ "Unknown"
-    ),
-    preg_med = case_when(
-  me_code == "R" ~ 1,
-  me_code == "C" ~ 0,
-  TRUE ~ NA_real_
-),
     age_group = case_when(
     age <= 18 ~ "0-18",
     age >= 19 & age <= 24 ~ "19-24",
@@ -135,31 +108,41 @@ episodes <-
       TRUE ~ "Unknown"
     )
   ) %>%
+  mutate(race_desc = recode(race_1,
+    "R5" = "White",
+    "R9" = "Other Race",
+    "R1" = "American Indian/Alaska Native",
+    "R2" = "Asian",
+    "R3" = "Black/African American",
+    "UN" = "Unknown/Not Specified",
+    "R4" = "Native Hawaiian or Other Pacific Islander",
+    .default = NA_character_
+  )) %>%
   mutate(los_less_60 = case_when(
     los <= 60 ~ 1,
     TRUE ~ 0
   )) %>%
   mutate(monthly_anchor_date = as.Date(format(anchor_date, "%Y-%m-01")))
 
-#Label
-var_label(episodes) <- list(
-    anchor_year = "Year",
-    age = "Age",
-    race_desc = "Race/Ethnicity",
-    age_group = "Age Group",
-    me_desc = "Enrollment Category (Month of birth episode)",
-    state_tx = "State (Month of birth episode)",
-    outcome_type = "Birth Outcome",
-    los = "Length of Stay",
-    hispanic = "Hispanic",
-    los_less_60 = "LOS <= 60 days",
-    diab_sample = "Diabetes Sample",
-    htn_sample = "HTN Sample",
-    monthly_anchor_date = "Anchor Month",
-    no_transfusion_weight = "Index No Transfusion Weight",
-    plan_ = "Plan",
-    dual = "Dual"
-  )
+# #Label
+# var_label(episodes) <- list(
+#     anchor_year = "Year",
+#     age = "Age",
+#     race_desc = "Race/Ethnicity",
+#     age_group = "Age Group",
+#     me_desc = "Enrollment Category (Month of birth episode)",
+#     state_tx = "State (Month of birth episode)",
+#     outcome_type = "Birth Outcome",
+#     los = "Length of Stay",
+#     hispanic = "Hispanic",
+#     los_less_60 = "LOS <= 60 days",
+#     diab_sample = "Diabetes Sample",
+#     htn_sample = "HTN Sample",
+#     monthly_anchor_date = "Anchor Month",
+#     no_transfusion_weight = "Index No Transfusion Weight",
+#     plan_ = "Plan",
+#     dual = "Dual"
+#   )
 
 
 ```
@@ -172,11 +155,14 @@ episodes %>%
   filter(enrolled_birth == 1) %>%
   filter(state_tx == 'TX') %>% 
   filter(los <= 60) %>%
-  filter( me_code == "R") %>%
-  filter( plan_ != "MMP") %>%
-  filter( dual == 0 ) 
+  filter( prim_med_plan_mon == "Medicaid") %>%
+  filter(prim_med_plan_design_mon != "HTW")
+
+cohort %>% nrow()
   
 ```
+
+
 
 ```{r add-time-vars}
 
@@ -283,8 +269,6 @@ stopifnot(max(cohort_check$period_sum, na.rm = TRUE) <= 1)
 
 ## Table 1
 
-(This is the older version)
-
 ```{r filter-cohort}
 
 sub.cohort <- 
@@ -307,12 +291,12 @@ table_by_group <- long_subcohort %>%
   mutate(group = recode(group,
                         htn_sample = "Hypertension",
                         diab_sample = "Diabetes")) %>%
-  select(group, outcome_type, anchor_year, race_desc, age_group, no_transfusion_weight) %>%
+  select(group, outcome_type, anchor_year, age_group, no_transfusion_weight) %>%
   tbl_summary(by = group)
 
 # Overall
 table_overall <- sub.cohort %>%
-  select(outcome_type, anchor_year, race_desc,  age_group, no_transfusion_weight) %>%
+  select(outcome_type, anchor_year, age_group, no_transfusion_weight) %>%
   tbl_summary()
 
 # Merge 
@@ -330,159 +314,6 @@ merged_table %>%
   FitFlextableToPage()
 
 ```
-
-
-```{r pre-post-table}
-# Make new table as specified in outline
-
-# Filter to the two groups + the two periods
-sub.cohort_pre_ffcra <-
-  cohort %>%
-  dplyr::filter(htn_sample == 1 | diab_sample == 1) %>%
-  dplyr::filter(anchor_date <= twelve_months_before) %>%
-  dplyr::filter(period_Pre == 1 | period_FFCRA == 1) %>%
-  dplyr::mutate(
-    period = dplyr::case_when(
-      period_Pre == 1   ~ "Pre",
-      period_FFCRA == 1 ~ "FFCRA",
-      TRUE ~ NA_character_
-    ),
-    period = factor(period, levels = c("Pre", "FFCRA"))
-  )
-
-# Long version (so each person can belong to Diabetes and/or HTN)
-long_pre_ffcra <-
-  sub.cohort_pre_ffcra %>%
-  dplyr::mutate(id = dplyr::row_number()) %>%
-  tidyr::pivot_longer(
-    cols = c(htn_sample, diab_sample),
-    names_to = "group",
-    values_to = "in_group"
-  ) %>%
-  dplyr::filter(in_group == 1) %>%
-  dplyr::mutate(
-    group = dplyr::recode(group,
-      htn_sample  = "Hypertension",
-      diab_sample = "Diabetes"
-    ),
-    group_period = paste0(group, " - ", period),
-    group_period = factor(
-      group_period,
-      levels = c("Diabetes - Pre", "Diabetes - FFCRA", "Hypertension - Pre", "Hypertension - FFCRA")
-    )
-  )
-
-# Combine
-table1_pre_ffcra <-
-  long_pre_ffcra %>%
-  dplyr::select(group_period, outcome_type, anchor_year, race_desc, age_group, no_transfusion_weight) %>%
-  gtsummary::tbl_summary(
-    by = group_period
-  )
-
-
-
-```
-
-{{< pagebreak >}}
-
-This is the newer version with pre and post
-
-```{r}
-
-table1_pre_ffcra %>%
-  as_flex_table() %>%
-  theme_box() %>%
-  padding(padding = 1.5) %>%
-  autofit() %>%
-  FitFlextableToPage()
-```
-
-```{r}
-# Exportable dataframe 
-table1_pre_ffcra_df <-
-  table1_pre_ffcra %>%
-  gtsummary::as_tibble(col_labels = TRUE) %>%
-  dplyr::mutate(state = "texas")
-```
-
-
-{{< pagebreak >}}
-
-### Multiple Post Periods
-
-
-```{r}
-
-# Filter to the groups and periods (Pre, FFCRA, Unwinding)
-# Note: Using Exposure_Unwinding period and labeling it as "Unwinding"
-sub.cohort_all_periods <-
-  cohort %>%
-  dplyr::filter(htn_sample == 1 | diab_sample == 1) %>%
-  dplyr::filter(anchor_date <= twelve_months_before) %>%
-  dplyr::filter(period_Pre == 1 | period_FFCRA == 1 | period_Exposure_Unwinding == 1) %>%
-  dplyr::mutate(
-    period = dplyr::case_when(
-      period_Pre == 1                  ~ "Pre",
-      period_FFCRA == 1                ~ "FFCRA",
-      period_Exposure_Unwinding == 1   ~ "Unwinding",
-      TRUE ~ NA_character_
-    ),
-    period = factor(period, levels = c("Pre", "FFCRA", "Unwinding"))
-  )
-
-# Long version (so each person can belong to Diabetes and/or HTN)
-long_all_periods <-
-  sub.cohort_all_periods %>%
-  dplyr::mutate(id = dplyr::row_number()) %>%
-  tidyr::pivot_longer(
-    cols = c(htn_sample, diab_sample),
-    names_to = "group",
-    values_to = "in_group"
-  ) %>%
-  dplyr::filter(in_group == 1) %>%
-  dplyr::mutate(
-    group = dplyr::recode(group,
-      htn_sample  = "Hypertension",
-      diab_sample = "Diabetes"
-    ),
-    group_period = paste0(group, " - ", period),
-    group_period = factor(
-      group_period,
-      levels = c(
-        "Diabetes - Pre", "Diabetes - FFCRA", "Diabetes - Unwinding",
-        "Hypertension - Pre", "Hypertension - FFCRA", "Hypertension - Unwinding"
-      )
-    )
-  )
-
-# Create Table 1 with all periods
-table1_all_periods <-
-  long_all_periods %>%
-  dplyr::select(group_period, outcome_type, anchor_year, race_desc, age_group, no_transfusion_weight) %>%
-  gtsummary::tbl_summary(
-    by = group_period
-  )
-
-# Exportable dataframe for all periods
-table1_all_periods_df <-
-  table1_all_periods %>%
-  gtsummary::as_tibble(col_labels = TRUE) %>%
-  dplyr::mutate(state = "texas")
-```
-
-```{r}
-table1_all_periods %>%
-  as_flex_table() %>%
-  theme_box() %>%
-  padding(padding = 1.5) %>%
-  autofit() %>%
-  FitFlextableToPage()
-
-```
-
-
-{{< pagebreak >}}
 
 ```{r make-htn}
 htn.subgroup <- 
@@ -513,11 +344,8 @@ visit.plots.subgroups_any <- bind_rows(
     summarise(Any_Outpatient = mean(out_any_outpatient_12, na.rm = TRUE), .groups = "drop") %>%
     mutate(subgroup = "Diabetes")
 ) %>%
-  mutate(subgroup = factor(subgroup, levels = c("Hypertension", "Diabetes"))) %>%
-  mutate(state = "texas", measure = "any_outpatient", use="graph") 
+  mutate(subgroup = factor(subgroup, levels = c("Hypertension", "Diabetes")))
 
-# Keep in new dataframe for export later
-any_outpatient_df_summary <- visit.plots.subgroups_any
 ```
 
 ```{r}
@@ -574,81 +402,25 @@ ggplot() +
 
 ## Figure 2: Biweekly graphs based on anchor date: diabetes screening
 
-```{r measure-plots}
-# Get starts
+```{r}
+
+# Get period starts
 period_starts <- time_periods %>%
   select(date = start, period) %>%
   arrange(date) %>%
   mutate(period = factor(period, levels = period))
 
-
-# Diabetes screening (12 months)
-diab_screening_df <- diab.subgroup %>%
+diab.screening <- 
+diab.subgroup %>%
   group_by(anchor_date_twoweeks) %>%
-  summarise(
-    value = mean(out_diab_screen_12, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    state   = "texas",
-    measure = "diabetes_screening_12m",
-    use     = "graph",
-    test_type = "all"
-  )
-
-# Diabetes postpartum visit (12 months)
-diab_visit_df <- diab.subgroup %>%
-  group_by(anchor_date_twoweeks) %>%
-  summarise(
-    value = mean(out_postpartum_12, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    state   = "texas",
-    measure = "diabetes_postpartum_visit_12m",
-    use     = "graph"
-  )
-
-# Hypertension postpartum visit (12 months)
-htn_visit_df <- htn.subgroup %>%
-  group_by(anchor_date_twoweeks) %>%
-  summarise(
-    value = mean(out_postpartum_12, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    state   = "texas",
-    measure = "hypertension_postpartum_visit_12m",
-    use     = "graph"
-  )
-
-# Hypertension medication (12 months)
-htn_med_df <- htn.subgroup %>%
-  group_by(anchor_date_twoweeks) %>%
-  summarise(
-    value = mean(out_htn_med_12, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    state   = "texas",
-    measure = "hypertension_medication_12m",
-    use     = "graph"
-  )
-
-
-### Make plots
-
-# Diabetes screening plot
-diab.screening <- ggplot(
-  diab_screening_df,
-  aes(x = anchor_date_twoweeks, y = value)
-) +
+  summarise(out_diab_screen_12 = mean(out_diab_screen_12)) %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = out_diab_screen_12)) +
   geom_line(linewidth = 1) +
   geom_vline(
     data = period_starts,
     aes(xintercept = date, color = period),
     linetype = "dashed",
-    linewidth = 0.75
+    linewidth=.75
   ) +
   scale_y_continuous(labels = percent, limits = c(0, 1)) +
   scale_color_brewer(palette = "Set2") +
@@ -660,17 +432,18 @@ diab.screening <- ggplot(
   ) +
   theme_minimal()
 
-# Diabetes postpartum visit plot
-diab.visit <- ggplot(
-  diab_visit_df,
-  aes(x = anchor_date_twoweeks, y = value)
-) +
+# Diabetes Visit graph
+diab.visit <- 
+diab.subgroup %>%
+  group_by(anchor_date_twoweeks) %>%
+  summarise(out_postpartum_12 = mean(out_postpartum_12)) %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = out_postpartum_12)) +
   geom_line(linewidth = 1) +
   geom_vline(
     data = period_starts,
     aes(xintercept = date, color = period),
     linetype = "dashed",
-    linewidth = 0.75
+    linewidth=.75
   ) +
   scale_y_continuous(labels = percent, limits = c(0, 1)) +
   scale_color_brewer(palette = "Set2") +
@@ -682,17 +455,18 @@ diab.visit <- ggplot(
   ) +
   theme_minimal()
 
-# Hypertension postpartum visit plot
-htn.visit <- ggplot(
-  htn_visit_df,
-  aes(x = anchor_date_twoweeks, y = value)
-) +
+# HTN Visit graph
+htn.visit <- 
+htn.subgroup %>%
+  group_by(anchor_date_twoweeks) %>%
+  summarise(out_postpartum_12 = mean(out_postpartum_12)) %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = out_postpartum_12)) +
   geom_line(linewidth = 1) +
   geom_vline(
     data = period_starts,
     aes(xintercept = date, color = period),
     linetype = "dashed",
-    linewidth = 0.75
+    linewidth=.75
   ) +
   scale_y_continuous(labels = percent, limits = c(0, 1)) +
   scale_color_brewer(palette = "Set2") +
@@ -704,17 +478,18 @@ htn.visit <- ggplot(
   ) +
   theme_minimal()
 
-# Hypertension medication plot
-htn.med <- ggplot(
-  htn_med_df,
-  aes(x = anchor_date_twoweeks, y = value)
-) +
+
+htn.med <- 
+htn.subgroup %>%
+  group_by(anchor_date_twoweeks) %>%
+  summarise(out_htn_med_12 = mean(out_htn_med_12)) %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = out_htn_med_12)) +
   geom_line(linewidth = 1) +
   geom_vline(
     data = period_starts,
     aes(xintercept = date, color = period),
     linetype = "dashed",
-    linewidth = 0.75
+    linewidth=.75
   ) +
   scale_y_continuous(labels = percent, limits = c(0, 1)) +
   scale_color_brewer(palette = "Set2") +
@@ -821,63 +596,6 @@ models <- list(
   )
 )
 
-
-```
-
-```{r extract-model-coef}
-
-# Coefficients + SE/t/p + CI (tidy)
-lm_coefs_df <- imap_dfr(
-  models,
-  ~ tidy(.x, conf.int = TRUE, conf.level = 0.95) %>%
-      mutate(model = .y),
-  .id = NULL
-) %>%
-  select(
-    model, term,
-    estimate, std.error, statistic, p.value,
-    conf.low, conf.high
-  ) %>%
-  rename(
-    std_error  = std.error,
-    t_value    = statistic,
-    p_value    = p.value,
-    conf_low   = conf.low,
-    conf_high  = conf.high
-  ) %>%
-  mutate(
-    group = case_when(
-      grepl("^diab_", model) ~ "diab",
-      grepl("^htn_", model)  ~ "htn",
-      TRUE ~ NA_character_
-    ),
-    adjustment = case_when(
-      grepl("_adj$", model)   ~ "adj",
-      grepl("_unadj$", model) ~ "unadj",
-      TRUE ~ NA_character_
-    )
-  )
-
-# Model-level fit statistics (glance)
-lm_fit_df <- imap_dfr(
-  models,
-  ~ glance(.x) %>% mutate(model = .y),
-  .id = NULL
-) %>%
-  select(model, nobs, r.squared, adj.r.squared, sigma, statistic, p.value, df, logLik, AIC, BIC) %>%
-  rename(
-    n          = nobs,
-    r2         = r.squared,
-    adj_r2     = adj.r.squared,
-    f_stat     = statistic,
-    f_p_value  = p.value,
-    df_model   = df
-  )
-
-# Optional: join fit stats onto each coefficient row (handy for Excel export)
-lm_results_df <- lm_coefs_df %>%
-  left_join(lm_fit_df, by = "model") %>%
-   mutate(state = "texas", measure = "regression", use="table") 
 
 ```
 
@@ -1000,53 +718,53 @@ htn_merged %>% as_flex_table() %>% FitFlextableToPage()
 
 ## Flowchart
 
-```{r}
-library(DiagrammeR)
-library(DiagrammeRsvg)
-library(webshot)
+<!-- ```{r} -->
+<!-- library(DiagrammeR) -->
+<!-- library(DiagrammeRsvg) -->
+<!-- library(webshot) -->
 
-# cohort copy
-final_cohort <- cohort
+<!-- # cohort copy -->
+<!-- final_cohort <- cohort -->
 
-# Count cohort steps
-n0 <- nrow(episodes)
-n1 <- episodes %>% filter(age >= 19 & age <= 55) %>% nrow()
-n2 <- episodes %>% filter(age >= 19 & age <= 55, enrolled_birth == 1) %>% nrow()
-n3 <- episodes %>% filter(age >= 19 & age <= 55, enrolled_birth == 1, state_tx == "TX") %>% nrow()
-n4 <- episodes %>% filter(age >= 19 & age <= 55, enrolled_birth == 1, state_tx == "TX", los <= 60) %>% nrow()
-n5 <- nrow(final_cohort)
-n5_diab <- final_cohort %>% filter(diab_sample == 1) %>% nrow()
-n5_htn  <- final_cohort %>% filter(htn_sample == 1) %>% nrow()
+<!-- # Count cohort steps -->
+<!-- n0 <- nrow(episodes) -->
+<!-- n1 <- episodes %>% filter(age >= 19 & age <= 55) %>% nrow() -->
+<!-- n2 <- episodes %>% filter(age >= 19 & age <= 55, enrolled_birth == 1) %>% nrow() -->
+<!-- n3 <- episodes %>% filter(age >= 19 & age <= 55, enrolled_birth == 1, state_tx == "TX") %>% nrow() -->
+<!-- n4 <- episodes %>% filter(age >= 19 & age <= 55, enrolled_birth == 1, state_tx == "TX", los <= 60) %>% nrow() -->
+<!-- n5 <- nrow(final_cohort) -->
+<!-- n5_diab <- final_cohort %>% filter(diab_sample == 1) %>% nrow() -->
+<!-- n5_htn  <- final_cohort %>% filter(htn_sample == 1) %>% nrow() -->
 
-# Create and export the updated diagram
-svg_code <- export_svg(
-  grViz(sprintf("
-    digraph cohort_flow {
-      graph [layout = dot, rankdir = TB]
-      node [shape = box, style = filled, fillcolor = LightGray, fontname = Helvetica, width = 3]
+<!-- # Create and export the updated diagram -->
+<!-- svg_code <- export_svg( -->
+<!--   grViz(sprintf(" -->
+<!--     digraph cohort_flow { -->
+<!--       graph [layout = dot, rankdir = TB] -->
+<!--       node [shape = box, style = filled, fillcolor = LightGray, fontname = Helvetica, width = 3] -->
 
-      A [label = 'Initial episodes\\n(n = %d)']
-      B [label = 'Aged 19-55\\n(n = %d)']
-      C [label = 'Enrolled at birth\\n(n = %d)']
-      D [label = 'Texas residents\\n(n = %d)']
-      E [label = 'LOS <= 60 days\\n(n = %d)']
-      F [label = 'Enrollment filters\\n(n = %d)']
-      G [label = 'Diabetes sample\\n(n = %d)']
-      H [label = 'Hypertension sample\\n(n = %d)']
+<!--       A [label = 'Initial episodes\\n(n = %d)'] -->
+<!--       B [label = 'Aged 19-55\\n(n = %d)'] -->
+<!--       C [label = 'Enrolled at birth\\n(n = %d)'] -->
+<!--       D [label = 'Texas residents\\n(n = %d)'] -->
+<!--       E [label = 'LOS <= 60 days\\n(n = %d)'] -->
+<!--       F [label = 'Enrollment filters\\n(n = %d)'] -->
+<!--       G [label = 'Diabetes sample\\n(n = %d)'] -->
+<!--       H [label = 'Hypertension sample\\n(n = %d)'] -->
 
-      A -> B -> C -> D -> E -> F
-      F -> G
-      F -> H
-    }
-  ", n0, n1, n2, n3, n4, n5, n5_diab, n5_htn))
-)
+<!--       A -> B -> C -> D -> E -> F -->
+<!--       F -> G -->
+<!--       F -> H -->
+<!--     } -->
+<!--   ", n0, n1, n2, n3, n4, n5, n5_diab, n5_htn)) -->
+<!-- ) -->
 
-#  SVG to file
-writeLines(svg_code, "flowchart.svg")
+<!-- #  SVG to file -->
+<!-- writeLines(svg_code, "flowchart.svg") -->
 
-# SVG to PNG
-webshot::webshot("flowchart.svg", file = "flowchart.png", vwidth = 1000, vheight = 900)
-```
+<!-- # SVG to PNG -->
+<!-- webshot::webshot("flowchart.svg", file = "flowchart.png", vwidth = 1000, vheight = 900) -->
+<!-- ``` -->
 
 {{< pagebreak >}}
 
@@ -1187,35 +905,6 @@ diab.both.tests %>%
 
 ```
 
-```{r combine-with-previous-test-types}
-
-diab_screening_combined_df <-
-  bind_rows(
-    diab_screening_df %>%
-      transmute(
-        anchor_date_twoweeks,
-        value,
-        state,
-        measure,
-        use,
-        test_type
-      ),
-
-    diab.both.tests %>%
-      transmute(
-        anchor_date_twoweeks,
-        value   = screening_rate,
-        state   = "texas",
-        measure = "diabetes_screening_12m",
-        use     = "graph",
-        test_type
-      )
-  ) %>%
-  arrange(test_type, anchor_date_twoweeks)
-
-```
-
-
 {{< pagebreak >}}
 
 ## Average Visits per Person
@@ -1233,12 +922,7 @@ visit.counts.subgroups_any <- bind_rows(
     summarise(Any_Outpatient = mean(total_visit_days_12, na.rm = TRUE), .groups = "drop") %>%
     mutate(subgroup = "Diabetes")
 ) %>%
-  mutate(subgroup = factor(subgroup, levels = c("Hypertension", "Diabetes"))) %>%
-  mutate(
-    state   = "texas",
-    measure = "average_outpatient_visits",
-    use     = "graph"
-  )
+  mutate(subgroup = factor(subgroup, levels = c("Hypertension", "Diabetes")))
 
 # Graph
 ggplot() +
@@ -1440,205 +1124,205 @@ tbl_regression(models$htn_postpartum_adj,
 
 {{< pagebreak >}}
 
-<!-- ## Event Study -->
+## Event Study
 
-<!-- ```{r graph-ce-2} -->
-<!-- # Filter -->
-<!-- cohort_filtered <- cohort %>%  -->
-<!--   filter(anchor_date >= as.Date("2020-01-01") & anchor_date < as.Date("2023-08-31")) -->
+```{r graph-ce-2}
+# Filter
+cohort_filtered <- cohort %>% 
+  filter(anchor_date >= as.Date("2020-01-01") & anchor_date < as.Date("2023-08-31"))
 
 
-<!-- outcome_ce <- cohort_filtered %>% -->
-<!--   group_by(anchor_date_twoweeks) %>% -->
-<!--   summarise( -->
-<!--     mean_ce_after_12 = mean(ce_after_12, na.rm = TRUE), -->
-<!--     .groups = "drop" -->
-<!--   ) -->
+outcome_ce <- cohort_filtered %>%
+  group_by(anchor_date_twoweeks) %>%
+  summarise(
+    mean_ce_after_12 = mean(ce_after_12, na.rm = TRUE),
+    .groups = "drop"
+  )
 
-<!-- # Plot outcome over time -->
-<!-- ggplot(outcome_ce, aes(x = anchor_date_twoweeks, y = mean_ce_after_12)) + -->
-<!--   geom_line(linewidth = 1, color = "darkblue") + -->
-<!--   geom_point(color = "darkblue", alpha = 0.6) + -->
-<!--   labs( -->
-<!--     title = "Continuous Enrollment (Filtered for 2020)", -->
-<!--     x = "Biweek Period", -->
-<!--     y = "% CE After 12", -->
-<!--     size = "N" -->
-<!--   ) + -->
-<!--   theme_minimal() + -->
-<!--   scale_y_continuous(labels = scales::percent, limits = c(0, 1)) + -->
-<!--   theme( -->
-<!--     plot.title = element_text(size = 14, face = "bold"), -->
-<!--     plot.subtitle = element_text(size = 10, color = "gray40"), -->
-<!--     axis.title = element_text(size = 11, face = "bold") -->
-<!--   ) -->
+# Plot outcome over time
+ggplot(outcome_ce, aes(x = anchor_date_twoweeks, y = mean_ce_after_12)) +
+  geom_line(linewidth = 1, color = "darkblue") +
+  geom_point(color = "darkblue", alpha = 0.6) +
+  labs(
+    title = "Continuous Enrollment (Filtered for 2020)",
+    x = "Biweek Period",
+    y = "% CE After 12",
+    size = "N"
+  ) +
+  theme_minimal() +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 10, color = "gray40"),
+    axis.title = element_text(size = 11, face = "bold")
+  )
 
-<!-- ``` -->
+```
 
-<!-- ```{r graph-ce} -->
-<!-- test_unwinding_dates_simple <- function(data, -->
-<!--                                         outcome_var = "ce_after_12", -->
-<!--                                         baseline_start = as.Date("2020-01-01"), -->
-<!--                                         unwinding_test_start = as.Date("2021-01-01"), -->
-<!--                                         unwinding_test_end = as.Date("2023-04-14"), -->
-<!--                                         data_end_date = as.Date("2023-08-31"), -->
-<!--                                         interval_days = 14) { -->
+```{r graph-ce}
+test_unwinding_dates_simple <- function(data,
+                                        outcome_var = "ce_after_12",
+                                        baseline_start = as.Date("2020-01-01"),
+                                        unwinding_test_start = as.Date("2021-01-01"),
+                                        unwinding_test_end = as.Date("2023-04-14"),
+                                        data_end_date = as.Date("2023-08-31"),
+                                        interval_days = 14) {
 
-<!--   # sequence of potential unwinding start dates -->
-<!--   test_dates <- seq(from = unwinding_test_start, -->
-<!--                     to   = unwinding_test_end, -->
-<!--                     by   = interval_days) -->
+  # sequence of potential unwinding start dates
+  test_dates <- seq(from = unwinding_test_start,
+                    to   = unwinding_test_end,
+                    by   = interval_days)
 
-<!--   # Function to fit models for a given unwinding start date -->
-<!--   fit_model_for_date <- function(unwind_start, data) { -->
+  # Function to fit models for a given unwinding start date
+  fit_model_for_date <- function(unwind_start, data) {
 
-<!--     # Baseline ends the day BEFORE unwinding starts -->
-<!--     baseline_end <- unwind_start - 1 -->
+    # Baseline ends the day BEFORE unwinding starts
+    baseline_end <- unwind_start - 1
 
-<!--     # mutually exclusive period indicators + 0-based global time (t) -->
-<!--     data_temp <- data %>% -->
-<!--       mutate( -->
-<!--         period_Baseline = as.integer(anchor_date >= baseline_start & anchor_date <= baseline_end), -->
-<!--         period_PostUnwinding = as.integer(anchor_date >= unwind_start & anchor_date <= data_end_date) -->
-<!--       ) %>% -->
-<!--       filter(period_Baseline == 1 | period_PostUnwinding == 1) %>% -->
-<!--       mutate( -->
-<!--         # 0-based time since baseline_start (your baseline clock) -->
-<!--         t = as.integer(difftime(anchor_date, baseline_start, units = "days") / 14), -->
+    # mutually exclusive period indicators + 0-based global time (t)
+    data_temp <- data %>%
+      mutate(
+        period_Baseline = as.integer(anchor_date >= baseline_start & anchor_date <= baseline_end),
+        period_PostUnwinding = as.integer(anchor_date >= unwind_start & anchor_date <= data_end_date)
+      ) %>%
+      filter(period_Baseline == 1 | period_PostUnwinding == 1) %>%
+      mutate(
+        # 0-based time since baseline_start (your baseline clock)
+        t = as.integer(difftime(anchor_date, baseline_start, units = "days") / 14),
 
-<!--         # 0-based "time since unwinding start" clock (proper ITS parameterization) -->
-<!--         unwind_start_t = as.integer(difftime(unwind_start, baseline_start, units = "days") / 14), -->
-<!--         t_after_unwinding = pmax(0, t - unwind_start_t) -->
-<!--       ) -->
+        # 0-based "time since unwinding start" clock (proper ITS parameterization)
+        unwind_start_t = as.integer(difftime(unwind_start, baseline_start, units = "days") / 14),
+        t_after_unwinding = pmax(0, t - unwind_start_t)
+      )
 
-<!--     # check mutually exclusive -->
-<!--     check_sum <- data_temp %>% -->
-<!--       mutate(period_sum = period_Baseline + period_PostUnwinding) %>% -->
-<!--       pull(period_sum) -->
+    # check mutually exclusive
+    check_sum <- data_temp %>%
+      mutate(period_sum = period_Baseline + period_PostUnwinding) %>%
+      pull(period_sum)
 
-<!--     if (any(check_sum != 1)) { -->
-<!--       warning(paste("Periods not mutually exclusive for date:", unwind_start)) -->
-<!--     } -->
+    if (any(check_sum != 1)) {
+      warning(paste("Periods not mutually exclusive for date:", unwind_start))
+    }
 
-<!--     # Model 1: ITS model with correct centered slope term -->
-<!--     # Y = B0 + B1*t + B2*Post + B3*(t - Ti)*Post -->
-<!--     model_its <- lm( -->
-<!--       as.formula(paste0(outcome_var, " ~ t + period_PostUnwinding + t_after_unwinding")), -->
-<!--       data = data_temp -->
-<!--     ) -->
+    # Model 1: ITS model with correct centered slope term
+    # Y = B0 + B1*t + B2*Post + B3*(t - Ti)*Post
+    model_its <- lm(
+      as.formula(paste0(outcome_var, " ~ t + period_PostUnwinding + t_after_unwinding")),
+      data = data_temp
+    )
 
-<!--     # Model 2: Simple pre/post model (no time trends) -->
-<!--     model_prepost <- lm( -->
-<!--       as.formula(paste0(outcome_var, " ~ period_PostUnwinding")), -->
-<!--       data = data_temp -->
-<!--     ) -->
+    # Model 2: Simple pre/post model (no time trends)
+    model_prepost <- lm(
+      as.formula(paste0(outcome_var, " ~ period_PostUnwinding")),
+      data = data_temp
+    )
 
-<!--     # Extract coefficients for ITS model -->
-<!--     coef_its <- broom::tidy(model_its) -->
-<!--     b0_its <- coef_its %>% filter(term == "(Intercept)") -->
-<!--     b1_its <- coef_its %>% filter(term == "t") -->
-<!--     b2_its <- coef_its %>% filter(term == "period_PostUnwinding") -->
-<!--     b3_its <- coef_its %>% filter(term == "t_after_unwinding") -->
+    # Extract coefficients for ITS model
+    coef_its <- broom::tidy(model_its)
+    b0_its <- coef_its %>% filter(term == "(Intercept)")
+    b1_its <- coef_its %>% filter(term == "t")
+    b2_its <- coef_its %>% filter(term == "period_PostUnwinding")
+    b3_its <- coef_its %>% filter(term == "t_after_unwinding")
 
-<!--     # Extract coefficients for pre/post model -->
-<!--     coef_prepost <- broom::tidy(model_prepost) -->
-<!--     intercept_prepost <- coef_prepost %>% filter(term == "(Intercept)") -->
-<!--     effect_prepost <- coef_prepost %>% filter(term == "period_PostUnwinding") -->
+    # Extract coefficients for pre/post model
+    coef_prepost <- broom::tidy(model_prepost)
+    intercept_prepost <- coef_prepost %>% filter(term == "(Intercept)")
+    effect_prepost <- coef_prepost %>% filter(term == "period_PostUnwinding")
 
-<!--     # Return results -->
-<!--     tibble( -->
-<!--       unwinding_start_date = unwind_start, -->
-<!--       baseline_end_date = baseline_end, -->
-<!--       n_baseline = sum(data_temp$period_Baseline == 1), -->
-<!--       n_postunwinding = sum(data_temp$period_PostUnwinding == 1), -->
+    # Return results
+    tibble(
+      unwinding_start_date = unwind_start,
+      baseline_end_date = baseline_end,
+      n_baseline = sum(data_temp$period_Baseline == 1),
+      n_postunwinding = sum(data_temp$period_PostUnwinding == 1),
 
-<!--       # ITS model results -->
-<!--       its_intercept = b0_its$estimate, -->
-<!--       its_time_trend = b1_its$estimate, -->
-<!--       its_level_change = b2_its$estimate, -->
-<!--       its_level_se = b2_its$std.error, -->
-<!--       its_level_pval = b2_its$p.value, -->
-<!--       its_level_ci_lower = its_level_change - 1.96 * its_level_se, -->
-<!--       its_level_ci_upper = its_level_change + 1.96 * its_level_se, -->
-<!--       its_slope_change = b3_its$estimate, -->
-<!--       its_slope_se = b3_its$std.error, -->
-<!--       its_slope_pval = b3_its$p.value, -->
+      # ITS model results
+      its_intercept = b0_its$estimate,
+      its_time_trend = b1_its$estimate,
+      its_level_change = b2_its$estimate,
+      its_level_se = b2_its$std.error,
+      its_level_pval = b2_its$p.value,
+      its_level_ci_lower = its_level_change - 1.96 * its_level_se,
+      its_level_ci_upper = its_level_change + 1.96 * its_level_se,
+      its_slope_change = b3_its$estimate,
+      its_slope_se = b3_its$std.error,
+      its_slope_pval = b3_its$p.value,
 
-<!--       # Pre/post model results -->
-<!--       prepost_intercept = intercept_prepost$estimate, -->
-<!--       prepost_effect = effect_prepost$estimate, -->
-<!--       prepost_effect_se = effect_prepost$std.error, -->
-<!--       prepost_effect_pval = effect_prepost$p.value, -->
-<!--       prepost_ci_lower = prepost_effect - 1.96 * prepost_effect_se, -->
-<!--       prepost_ci_upper = prepost_effect + 1.96 * prepost_effect_se -->
-<!--     ) -->
-<!--   } -->
+      # Pre/post model results
+      prepost_intercept = intercept_prepost$estimate,
+      prepost_effect = effect_prepost$estimate,
+      prepost_effect_se = effect_prepost$std.error,
+      prepost_effect_pval = effect_prepost$p.value,
+      prepost_ci_lower = prepost_effect - 1.96 * prepost_effect_se,
+      prepost_ci_upper = prepost_effect + 1.96 * prepost_effect_se
+    )
+  }
 
-<!--   # map over all test dates -->
-<!--   results <- purrr::map_dfr(test_dates, ~fit_model_for_date(.x, data)) -->
+  # map over all test dates
+  results <- purrr::map_dfr(test_dates, ~fit_model_for_date(.x, data))
 
-<!--   return(results) -->
-<!-- } -->
+  return(results)
+}
 
-<!-- # run function -->
-<!-- cohort_unwinding_tests_simple <- test_unwinding_dates_simple( -->
-<!--   data = cohort_filtered, -->
-<!--   outcome_var = "ce_after_12", -->
-<!--   baseline_start = as.Date("2020-01-01"), -->
-<!--   unwinding_test_start = as.Date("2021-01-01"), -->
-<!--   unwinding_test_end = as.Date("2023-04-08"), -->
-<!--   data_end_date = as.Date("2023-08-31") -->
-<!-- ) -->
+# run function
+cohort_unwinding_tests_simple <- test_unwinding_dates_simple(
+  data = cohort_filtered,
+  outcome_var = "ce_after_12",
+  baseline_start = as.Date("2020-01-01"),
+  unwinding_test_start = as.Date("2021-01-01"),
+  unwinding_test_end = as.Date("2023-04-08"),
+  data_end_date = as.Date("2023-08-31")
+)
 
-<!-- # Write full results to Excel -->
-<!-- library(openxlsx) -->
-<!-- write.xlsx(cohort_unwinding_tests_simple, "event_study_results.xlsx") -->
+# Write full results to Excel
+library(openxlsx)
+write.xlsx(cohort_unwinding_tests_simple, "event_study_results.xlsx")
 
-<!-- # Plot ITS model results -->
-<!-- p1 <- ggplot(cohort_unwinding_tests_simple, aes(x = unwinding_start_date, y = its_level_change)) + -->
-<!--   geom_ribbon(aes(ymin = its_level_ci_lower, ymax = its_level_ci_upper), -->
-<!--               alpha = 0.3) + -->
-<!--   geom_line(linewidth = 1.2) + -->
-<!--   geom_point(size = 2) + -->
-<!--   geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.8) + -->
-<!--   labs( -->
-<!--     title = "ITS Model: Level Change (B2) by Unwinding Start Date", -->
-<!--     subtitle = "Model: Y = B0 + B1*t + B2*Post + B3*time_since_unwinding", -->
-<!--     x = "Unwinding Start Date", -->
-<!--     y = "B2: Level Change Coefficient" -->
-<!--   ) + -->
-<!--   theme_minimal() + -->
-<!--   theme( -->
-<!--     plot.title = element_text(size = 13, face = "bold"), -->
-<!--     plot.subtitle = element_text(size = 10, color = "gray40"), -->
-<!--     axis.title = element_text(size = 11, face = "bold") -->
-<!--   ) -->
+# Plot ITS model results
+p1 <- ggplot(cohort_unwinding_tests_simple, aes(x = unwinding_start_date, y = its_level_change)) +
+  geom_ribbon(aes(ymin = its_level_ci_lower, ymax = its_level_ci_upper),
+              alpha = 0.3) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2) +
+  geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.8) +
+  labs(
+    title = "ITS Model: Level Change (B2) by Unwinding Start Date",
+    subtitle = "Model: Y = B0 + B1*t + B2*Post + B3*time_since_unwinding",
+    x = "Unwinding Start Date",
+    y = "B2: Level Change Coefficient"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 13, face = "bold"),
+    plot.subtitle = element_text(size = 10, color = "gray40"),
+    axis.title = element_text(size = 11, face = "bold")
+  )
 
-<!-- # Plot pre/post model results -->
-<!-- p2 <- ggplot(cohort_unwinding_tests_simple, aes(x = unwinding_start_date, y = prepost_effect)) + -->
-<!--   geom_ribbon(aes(ymin = prepost_ci_lower, ymax = prepost_ci_upper), -->
-<!--               alpha = 0.3) + -->
-<!--   geom_line(linewidth = 1.2) + -->
-<!--   geom_point(size = 2) + -->
-<!--   geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.8) + -->
-<!--   labs( -->
-<!--     title = "Pre/Post Model: Effect by Unwinding Start Date", -->
-<!--     subtitle = "Model: Y = B0 + B1*Post (no time trends)", -->
-<!--     x = "Unwinding Start Date", -->
-<!--     y = "B1: Pre/Post Effect" -->
-<!--   ) + -->
-<!--   theme_minimal() + -->
-<!--   theme( -->
-<!--     plot.title = element_text(size = 13, face = "bold"), -->
-<!--     plot.subtitle = element_text(size = 10, color = "gray40"), -->
-<!--     axis.title = element_text(size = 11, face = "bold") -->
-<!--   ) -->
+# Plot pre/post model results
+p2 <- ggplot(cohort_unwinding_tests_simple, aes(x = unwinding_start_date, y = prepost_effect)) +
+  geom_ribbon(aes(ymin = prepost_ci_lower, ymax = prepost_ci_upper),
+              alpha = 0.3) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2) +
+  geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.8) +
+  labs(
+    title = "Pre/Post Model: Effect by Unwinding Start Date",
+    subtitle = "Model: Y = B0 + B1*Post (no time trends)",
+    x = "Unwinding Start Date",
+    y = "B1: Pre/Post Effect"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 13, face = "bold"),
+    plot.subtitle = element_text(size = 10, color = "gray40"),
+    axis.title = element_text(size = 11, face = "bold")
+  )
 
-<!-- # Display both plots -->
-<!-- library(patchwork) -->
-<!-- p1 / p2 -->
+# Display both plots
+library(patchwork)
+p1 / p2
 
-<!-- ``` -->
+```
 
 {{< pagebreak >}}
 
@@ -1697,60 +1381,6 @@ fml_adj   <- formula(models$diab_screen_adj)
 
 models$diab_screen_unadj_nopre <- lm(fml_unadj, data = diab.subgroup_nopre)
 models$diab_screen_adj_nopre   <- lm(fml_adj,   data = diab.subgroup_nopre)
-
-```
-
-
-```{r}
-lm_results_nopre_df <- imap_dfr(
-  models[c("diab_screen_unadj_nopre", "diab_screen_adj_nopre")],
-  ~ tidy(.x, conf.int = TRUE, conf.level = 0.95) %>%
-      mutate(model = .y),
-  .id = NULL
-) %>%
-  select(
-    model, term,
-    estimate, std.error, statistic, p.value,
-    conf.low, conf.high
-  ) %>%
-  rename(
-    std_error  = std.error,
-    t_value    = statistic,
-    p_value    = p.value,
-    conf_low   = conf.low,
-    conf_high  = conf.high
-  ) %>%
-  mutate(
-    group = "diab",
-    adjustment = case_when(
-      grepl("_adj_nopre$", model)   ~ "adj",
-      grepl("_unadj_nopre$", model) ~ "unadj",
-      TRUE ~ NA_character_
-    ),
-    analysis = "exclude_preexisting_diabetes",
-    state = "texas"
-  )
-
-# Get model fit statistics for these models
-lm_fit_nopre_df <- imap_dfr(
-  models[c("diab_screen_unadj_nopre", "diab_screen_adj_nopre")],
-  ~ glance(.x) %>% mutate(model = .y),
-  .id = NULL
-) %>%
-  select(model, nobs, r.squared, adj.r.squared, sigma, statistic, p.value, df, logLik, AIC, BIC) %>%
-  rename(
-    n          = nobs,
-    r2         = r.squared,
-    adj_r2     = adj.r.squared,
-    f_stat     = statistic,
-    f_p_value  = p.value,
-    df_model   = df
-  )
-
-# Join fit stats
-lm_results_nopre_complete_df <- lm_results_nopre_df %>%
-  left_join(lm_fit_nopre_df, by = "model")
-
 
 ```
 
@@ -2045,13 +1675,13 @@ dshs.numbers.change %>%
 ```{r}
 ce.change <-
 cohort %>%
+  filter(anchor_date_month > as.Date("2019-12-31")) %>%
   group_by(anchor_date_month) %>%
   summarize(pct_ce_after_12 = mean(ce_after_12), .groups = "drop") %>%
   arrange(anchor_date_month) %>% 
   mutate(
     pct_change_pregnant = (pct_ce_after_12 / lag(pct_ce_after_12) - 1) * 100
-  ) %>%
-  mutate(state = "texas", measure = "pct_change_continuous_enrollment") 
+  ) 
 
 ce.change %>%
   ggplot(aes(x = anchor_date_month, y = pct_change_pregnant)) +
@@ -2066,10 +1696,9 @@ ce.change %>%
 
 ```
 
-
 ```{r}
 ce_tbl <- ce.change %>%
-   filter(anchor_date_month >= as.Date("2019-01-01") & anchor_date_month <= as.Date("2023-09-30")) %>%
+   filter(anchor_date_month >= as.Date("2022-01-01") & anchor_date_month <= as.Date("2023-09-30")) %>%
   mutate(
     rate_pct = pct_ce_after_12 * 100,                 # level as %
     mom_change_pct = pct_change_pregnant              # already in %
@@ -2187,37 +1816,3 @@ plot_its_model(
 
 
 ```
-
-# Export Excel
-```{r}
-# ============================
-# Export results to Excel
-# ============================
-
-output_file <- paste0(
-  Sys.Date(),
-  "-texas-paper-one-results.xlsx"
-)
-
-openxlsx::write.xlsx(
-  list(
-    any_outpatient_summary        = any_outpatient_df_summary,
-    diab_screening                = diab_screening_df,
-    diab_screening_combined       = diab_screening_combined_df,
-    diab_postpartum_visit         = diab_visit_df,
-    htn_postpartum_visit          = htn_visit_df,
-    htn_medication                = htn_med_df,
-    visit_counts_subgroups_any    = visit.counts.subgroups_any,
-    ce_change_month               = ce.change,
-    lm_results                    = lm_results_df,
-    lm_results_nopre              = lm_results_nopre_complete_df,  
-    table1_pre_ffcra              = table1_pre_ffcra_df,
-    table1_all_periods            = table1_all_periods_df,
-    enrollment_ce_subs            = enrollment.subgroups.ce
-  ),
-  file = output_file,
-  overwrite = TRUE
-)
-
-```
-

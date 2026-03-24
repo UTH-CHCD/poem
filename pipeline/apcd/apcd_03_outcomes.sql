@@ -197,6 +197,32 @@ select * from research_dev.poem_outcomes_enroll;
 
 
 /* ----------------------------------
+ * Medicaid Eligibility Details
+ * (modal values at anchor month)
+ * ----------------------------------*/
+
+DROP TABLE IF EXISTS research_dev.poem_outcomes_mcd_elig;
+
+CREATE TABLE research_dev.poem_outcomes_mcd_elig AS
+SELECT 
+    c.apcd_id,
+    c.ep_num,
+    MODE() WITHIN GROUP (ORDER BY m.data_submitter_code) AS data_submitter_code,
+    MODE() WITHIN GROUP (ORDER BY m.mc_flag)             AS mc_flag,
+    MODE() WITHIN GROUP (ORDER BY m.mc_sc)               AS mc_sc,
+    MODE() WITHIN GROUP (ORDER BY m.me_at)               AS me_at,
+    MODE() WITHIN GROUP (ORDER BY m.me_code)             AS me_code,
+    MODE() WITHIN GROUP (ORDER BY m.me_tp)               AS me_tp,
+    MODE() WITHIN GROUP (ORDER BY m.me_sd)               AS me_sd,
+    MODE() WITHIN GROUP (ORDER BY m.riskgrp_id)          AS riskgrp_id
+FROM research_dev.poem_cohort c
+JOIN research_di.mcd_elig_supp m
+    ON m.apcd_id = c.apcd_id
+    AND m.yrmon = CAST(TO_CHAR(c.anchor_date, 'YYYYMM') AS BIGINT)
+GROUP BY c.apcd_id, c.ep_num;
+
+
+/* ----------------------------------
  * Preventitive/E&M Visits 
  * -----------------------------------*/
 
@@ -853,11 +879,115 @@ SELECT
     CAST(100.0 * n / total AS NUMERIC(5,1)) AS share_of_visits
 FROM counts, totals;
 
--- Verification queries
-SELECT COUNT(DISTINCT apcd_id) FROM research_dev.poem_outcomes_outpatient_12
-UNION ALL
-SELECT COUNT(DISTINCT apcd_id) FROM research_dev.poem_cohort;
 
-SELECT COUNT(DISTINCT apcd_id) FROM research_dev.poem_outcomes_outpatient_categories;
 
+/* ----------------------------------
+ * MH Drugs (NDC-based)
+ * ----------------------------------*/
+
+DROP TABLE IF EXISTS research_dev.poem_outcomes_out_mh_drug;
+
+CREATE TABLE research_dev.poem_outcomes_out_mh_drug AS
+SELECT
+    c.apcd_id,
+    c.ep_num,
+    CASE WHEN COUNT(p.ndc) > 0 THEN 1 ELSE 0 END AS out_mh_drug_12
+FROM research_dev.poem_cohort c
+LEFT JOIN research_dev.pharmacy_adj_poem p
+    ON p.apcd_id = c.apcd_id
+    AND p.fill_dt BETWEEN c.anchor_date + 1 AND c.anchor_date + 365
+    AND p.ndc IN (SELECT ndc FROM research_dev.poem_mh_ndc)
+GROUP BY
+    c.apcd_id,
+    c.ep_num;
    
+   
+
+/* ----------------------------------
+ * Therapy Sessions (CPT-based)
+ * ----------------------------------*/
+
+DROP TABLE IF EXISTS research_dev.poem_outcomes_out_therapy;
+
+CREATE TABLE research_dev.poem_outcomes_out_therapy AS
+SELECT
+    c.apcd_id,
+    c.ep_num,
+    CASE WHEN COUNT(m.proc_cd) > 0 THEN 1 ELSE 0 END AS out_therapy_12
+FROM research_dev.poem_cohort c
+LEFT JOIN research_dev.medical_adj_poem m
+    ON m.apcd_id = c.apcd_id
+    AND m.dos_thru BETWEEN c.anchor_date + 1 AND c.anchor_date + 365
+    AND m.proc_cd IN (
+        '90832', '90833', '90834', '90836', '90837', '90838',
+        '90839', '90840', '90846', '90847', '90849', '90853',
+        '90863', 'G0176', 'H2032'
+    )
+GROUP BY
+    c.apcd_id,
+    c.ep_num;
+
+
+------------------
+--- Mental Health DX (Subsequent, within 1 year after anchor) -----
+------------------
+
+-- all subsequent MH DX with categories
+DROP TABLE IF EXISTS research_dev.poem_cohort_subgroup_mh_post1;
+
+CREATE TABLE research_dev.poem_cohort_subgroup_mh_post1 AS
+SELECT DISTINCT 
+    a.apcd_id, 
+    a.dos,
+    b.mh_category
+FROM research_dev.med_dx_poem a 
+JOIN research_dev.poem_mh_dx b 
+    ON a.dx = b.icd_dx
+WHERE a.apcd_id IN (SELECT apcd_id FROM research_dev.poem_cohort);
+
+-- mental health DX to anchor dates with categories (1 year after)
+DROP TABLE IF EXISTS research_dev.poem_cohort_mh_post_sample_detail;
+
+CREATE TABLE research_dev.poem_cohort_mh_post_sample_detail AS
+SELECT 
+    a.apcd_id, 
+    a.ep_num,
+    b.mh_category,
+    COUNT(b.dos) AS dx_count
+FROM research_dev.poem_cohort a
+INNER JOIN research_dev.poem_cohort_subgroup_mh_post1 b 
+    ON a.apcd_id = b.apcd_id 
+    AND b.dos BETWEEN a.anchor_date + 1 AND a.anchor_date + 365
+GROUP BY 
+    a.apcd_id, 
+    a.ep_num,
+    b.mh_category;
+
+-- one row per apcd_id and ep_num — any subsequent MH dx in year after anchor
+DROP TABLE IF EXISTS research_dev.poem_cohort_mh_post_sample;
+
+CREATE TABLE research_dev.poem_cohort_mh_post_sample AS
+SELECT 
+    a.apcd_id, 
+    a.ep_num,
+    CASE 
+        WHEN COUNT(b.dos) > 0 THEN 1 
+        ELSE 0 
+    END AS out_mh_dx_12,
+    MAX(CASE WHEN b.mh_category = 'Anxiety and fear-related disorders'               THEN 1 ELSE 0 END) AS out_mh_anxiety_12,
+    MAX(CASE WHEN b.mh_category = 'Depressive disorders'                              THEN 1 ELSE 0 END) AS out_mh_depression_12,
+    MAX(CASE WHEN b.mh_category = 'Suicidal ideation/attempt/intentional self-harm'  THEN 1 ELSE 0 END) AS out_mh_suicidal_12,
+    MAX(CASE WHEN b.mh_category = 'Schizophrenia spectrum/other pyschotic disorders' THEN 1 ELSE 0 END) AS out_mh_schizophrenia_12,
+    MAX(CASE WHEN b.mh_category = 'Trauma- and stressor-related disorders'           THEN 1 ELSE 0 END) AS out_mh_trauma_12,
+    MAX(CASE WHEN b.mh_category = 'Bipolar and related disorders'                    THEN 1 ELSE 0 END) AS out_mh_bipolar_12,
+    MAX(CASE WHEN b.mh_category = 'Other - neurodevelopmental disorders'             THEN 1 ELSE 0 END) AS out_mh_neurodevelopmental_12,
+    MAX(CASE WHEN b.mh_category = 'Other - other disorders'                          THEN 1 ELSE 0 END) AS out_mh_other_12
+FROM research_dev.poem_cohort a
+LEFT JOIN research_dev.poem_cohort_subgroup_mh_post1 b 
+    ON a.apcd_id = b.apcd_id 
+    AND b.dos BETWEEN a.anchor_date + 1 AND a.anchor_date + 365
+GROUP BY 
+    a.apcd_id, 
+    a.ep_num;
+
+DROP TABLE IF EXISTS research_dev.poem_cohort_subgroup_mh_post1;
