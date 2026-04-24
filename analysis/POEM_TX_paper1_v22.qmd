@@ -506,7 +506,20 @@ diab.subgroup <-
   cohort %>% 
   filter(diab_sample==1) %>%
   filter(anchor_date <= twelve_months_before)
+
+# 
+# # Cross-tabulation of the two diabetes indicators
+# table(diab.subgroup$pre_existing_diab, diab.subgroup$gest_diab, 
+#       dnn = c("pre_existing_diab", "gest_diab"))
+# 
+# diab.subgroup %>%
+#   distinct(client_nbr, pre_existing_diab, gest_diab) %>%   # one row per person
+#   group_by(pre_existing_diab, gest_diab) %>%
+#   summarise(n = n(), .groups = "drop") %>%
+#   mutate(pct = round(100 * n / sum(n), 1)) %>%
+#   arrange(pre_existing_diab, gest_diab)
 ```
+
 
 {{< pagebreak >}}
 
@@ -829,6 +842,32 @@ models <- list(
       t_after_FFCRA + t_after_Exposure +
       age + no_transfusion_weight,
     data = htn.subgroup
+  ),
+
+  # Diabetes Average Outpatient Visit Count
+  diab_visit_count_unadj = lm(
+    total_visit_days_12 ~ t + period_FFCRA + period_Exposure_Unwinding +
+      t_after_FFCRA + t_after_Exposure,
+    data = diab.subgroup
+  ),
+  diab_visit_count_adj = lm(
+    total_visit_days_12 ~ t + period_FFCRA + period_Exposure_Unwinding +
+      t_after_FFCRA + t_after_Exposure +
+      age + no_transfusion_weight,
+    data = diab.subgroup
+  ),
+
+  # HTN Average Outpatient Visit Count
+  htn_visit_count_unadj = lm(
+    total_visit_days_12 ~ t + period_FFCRA + period_Exposure_Unwinding +
+      t_after_FFCRA + t_after_Exposure,
+    data = htn.subgroup
+  ),
+  htn_visit_count_adj = lm(
+    total_visit_days_12 ~ t + period_FFCRA + period_Exposure_Unwinding +
+      t_after_FFCRA + t_after_Exposure +
+      age + no_transfusion_weight,
+    data = htn.subgroup
   )
 )
 
@@ -1003,6 +1042,63 @@ diabetes_merged %>% as_flex_table()%>% FitFlextableToPage()
 
 ```{r}
 htn_merged %>% as_flex_table() %>% FitFlextableToPage()
+```
+
+{{< pagebreak >}}
+
+## Table 3: ITS results for average outpatient visit count, adjusted, main coefficients only
+
+```{r}
+# Diabetes: Average visit count
+diab_visit_count_tbl <- tbl_regression(
+  models$diab_visit_count_adj,
+  include = c("t", "period_FFCRA", "period_Exposure_Unwinding", "t_after_FFCRA", "t_after_Exposure"),
+  label = list(
+    t ~ "Pre-trend",
+    period_FFCRA ~ "Level Change, FFCRA",
+    t_after_FFCRA ~ "Trend Change, FFCRA",
+    period_Exposure_Unwinding ~ "Level Change, Exposure to Unwinding",
+    t_after_Exposure ~ "Trend Change, Exposure to Unwinding"
+  ),
+  estimate_fun = fmt_fun
+) %>%
+  modify_column_hide(p.value) %>%
+  modify_header(estimate ~ "**Avg Outpatient Visits** Beta") %>%
+  fix_trend_labels()
+
+# HTN: Average visit count
+htn_visit_count_tbl <- tbl_regression(
+  models$htn_visit_count_adj,
+  include = c("t", "period_FFCRA", "period_Exposure_Unwinding", "t_after_FFCRA", "t_after_Exposure"),
+  label = list(
+    t ~ "Pre-trend",
+    period_FFCRA ~ "Level Change, FFCRA",
+    t_after_FFCRA ~ "Trend Change, FFCRA",
+    period_Exposure_Unwinding ~ "Level Change, Exposure to Unwinding",
+    t_after_Exposure ~ "Trend Change, Exposure to Unwinding"
+  ),
+  estimate_fun = fmt_fun
+) %>%
+  modify_column_hide(p.value) %>%
+  modify_header(estimate ~ "**Avg Outpatient Visits** Beta") %>%
+  fix_trend_labels()
+
+
+```
+
+```{r}
+diab_visit_count_tbl %>%
+  modify_spanning_header(everything() ~ "**Diabetes cohort**") %>%
+  as_flex_table() %>%
+  FitFlextableToPage()
+```
+
+
+```{r}
+htn_visit_count_tbl %>%
+  modify_spanning_header(everything() ~ "**Hypertension cohort**") %>%
+  as_flex_table() %>%
+  FitFlextableToPage()
 ```
 
 {{< pagebreak >}}
@@ -1375,6 +1471,26 @@ ggplot() +
 
 # Supplemental Tables
 
+## Share of Visits for outpatient
+
+This is based on the chart in the appendix we got the categories from
+
+```{r}
+op.sum <- 
+dbGetQuery(spc, " 
+  select * from CHCDWORK.dbo.poem_outcomes_outpatient_categories_summary 
+ ;")
+
+
+op.sum %>% arrange(desc(share_of_visits)) %>% flextable()%>%
+  theme_box() %>%
+  padding(padding = 1.5) %>%
+  autofit() %>%
+  FitFlextableToPage()
+```
+
+
+
 ## Full ITS Results
 
 ### Diabetes Screening
@@ -1474,6 +1590,56 @@ tbl_regression(models$htn_any_outpatient_adj,
   estimate_fun = ~ style_number(.x, digits = 4)
 ) 
 
+```
+
+{{< pagebreak >}}
+
+### Average Outpatient Visit Count (total_visit_days_12)
+
+#### Diabetes Visit Count
+
+Unadjusted
+
+```{r}
+tbl_regression(models$diab_visit_count_unadj,
+  intercept = TRUE,
+  pvalue_fun = ~ style_pvalue(.x, digits = 2),
+  estimate_fun = ~ style_number(.x, digits = 4)
+)
+```
+
+Adjusted
+
+```{r}
+tbl_regression(models$diab_visit_count_adj,
+  intercept = TRUE,
+  pvalue_fun = ~ style_pvalue(.x, digits = 2),
+  estimate_fun = ~ style_number(.x, digits = 4)
+)
+```
+
+{{< pagebreak >}}
+
+#### HTN Visit Count
+
+Unadjusted
+
+```{r}
+tbl_regression(models$htn_visit_count_unadj,
+  intercept = TRUE,
+  pvalue_fun = ~ style_pvalue(.x, digits = 2),
+  estimate_fun = ~ style_number(.x, digits = 4)
+)
+```
+
+Adjusted
+
+```{r}
+tbl_regression(models$htn_visit_count_adj,
+  intercept = TRUE,
+  pvalue_fun = ~ style_pvalue(.x, digits = 2),
+  estimate_fun = ~ style_number(.x, digits = 4)
+)
 ```
 
 {{< pagebreak >}}

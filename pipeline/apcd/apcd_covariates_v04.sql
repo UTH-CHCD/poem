@@ -7,7 +7,7 @@ DROP TABLE IF EXISTS research_dev.poem_cohort_dx_cov_dx;
 
 /*
 CREATE TABLE research_dev.poem_cohort_dx_cov_dx as
-SELECT distinct a.apcd_id, 
+SELECT distinct a.pers_id, 
        a.dos,
        b.condition, 
        b.smm_weight, 
@@ -16,11 +16,11 @@ FROM research_dev.med_dx_poem a
 JOIN research_dev.poem_comorbid_index b 
     ON a.dx LIKE b.dx || '%'
   join research_dev.poem_cohort c 
-    on a.apcd_id = c.apcd_id
+    on a.pers_id = c.pers_id
 ; */
 
 CREATE TABLE research_dev.poem_cohort_dx_cov_dx as
-SELECT distinct a.apcd_id, 
+SELECT distinct a.pers_id, 
        a.dos,
        b.condition, 
        b.smm_weight, 
@@ -29,7 +29,7 @@ FROM research_dev.med_dx_poem a
 JOIN research_dev.poem_comorbid_index b 
     ON LEFT(a.dx, LENGTH(b.dx)) = b.dx
 JOIN research_dev.poem_cohort c 
-    on a.apcd_id = c.apcd_id;
+    on a.pers_id = c.pers_id;
 
    
 -- Extract covariates occurring within 280 days prior to the anchor date
@@ -37,7 +37,7 @@ DROP TABLE IF EXISTS research_dev.poem_cohort_cov_280;
 
 CREATE TABLE research_dev.poem_cohort_cov_280 AS
 SELECT DISTINCT 
-    a.apcd_id, 
+    a.pers_id, 
     a.ep_num, 
     a.anchor_date,
     b.condition, 
@@ -45,7 +45,7 @@ SELECT DISTINCT
     b.no_transfusion_weight
 FROM research_dev.poem_cohort a 
 JOIN research_dev.poem_cohort_dx_cov_dx b 
-    ON a.apcd_id = b.apcd_id 
+    ON a.pers_id = b.pers_id 
     AND b.dos <= a.anchor_date 
     AND (a.anchor_date - b.dos) BETWEEN 0 AND 280;
 
@@ -53,29 +53,29 @@ JOIN research_dev.poem_cohort_dx_cov_dx b
 DROP TABLE IF EXISTS research_dev.poem_cohort_cov_weights;
 
 CREATE TABLE research_dev.poem_cohort_cov_weights AS
-SELECT apcd_id, 
+SELECT pers_id, 
        ep_num, 
        sum(smm_weight) as smm_weight, 
        sum(no_transfusion_weight) as no_transfusion_weight
 FROM research_dev.poem_cohort_cov_280
-GROUP BY apcd_id, ep_num;
+GROUP BY pers_id, ep_num;
 
 -- add weight based on age to get final weights 
 DROP TABLE IF EXISTS research_dev.poem_cohort_weights;
 
 CREATE TABLE research_dev.poem_cohort_weights AS
 WITH pre_age AS (
-    SELECT a.apcd_id, 
+    SELECT a.pers_id, 
            a.ep_num, 
            age, 
            COALESCE(b.smm_weight, 0) as smm_weight,
            COALESCE(b.no_transfusion_weight, 0) as no_transfusion_weight
     FROM research_dev.poem_cohort a 
     LEFT JOIN research_dev.poem_cohort_cov_weights b 
-        ON a.apcd_id = b.apcd_id
+        ON a.pers_id = b.pers_id
        AND a.ep_num = b.ep_num
 )
-SELECT apcd_id, 
+SELECT pers_id, 
        ep_num, 
        CASE WHEN age >= 35 THEN smm_weight + 2 ELSE smm_weight END as smm_weight,
        CASE WHEN age >= 35 THEN no_transfusion_weight + 1 ELSE no_transfusion_weight END as no_transfusion_weight
@@ -102,18 +102,18 @@ WHERE variable_name LIKE '%dm%';
 DROP TABLE IF EXISTS research_dev.poem_cohort_subgroup_dm1;
 
 CREATE TABLE research_dev.poem_cohort_subgroup_dm1 AS
-SELECT DISTINCT a.apcd_id, a.dos, b.variable_name
+SELECT DISTINCT a.pers_id, a.dos, b.variable_name
 FROM research_dev.med_dx_poem a 
 JOIN research_dev.poem_covariates_dx_dm b 
     ON a.dx LIKE b.cd_value_sql
-where a.apcd_id in (select apcd_id from  research_dev.poem_cohort); 
+where a.pers_id in (select pers_id from  research_dev.poem_cohort); 
     
 -- Link diabetes DX to anchor dates 
 DROP TABLE IF EXISTS research_dev.poem_cohort_diab_sample;
 
 CREATE TABLE research_dev.poem_cohort_diab_sample AS
 SELECT 
-    a.apcd_id, 
+    a.pers_id, 
     a.ep_num,
     CASE 
         WHEN COUNT(b.dos) > 0 THEN 1 
@@ -129,11 +129,11 @@ SELECT
     END AS gest_diab
 FROM research_dev.poem_cohort a
 LEFT JOIN research_dev.poem_cohort_subgroup_dm1 b 
-    ON a.apcd_id = b.apcd_id 
+    ON a.pers_id = b.pers_id 
     AND b.dos <= a.anchor_date 
     AND (a.anchor_date - b.dos) BETWEEN 0 AND 280
 GROUP BY 
-    a.apcd_id, 
+    a.pers_id, 
     a.ep_num;
  
 DROP TABLE IF EXISTS research_dev.poem_cohort_subgroup_dm1;
@@ -153,18 +153,18 @@ WHERE variable_name LIKE '%htn%';
 DROP TABLE IF EXISTS research_dev.poem_cohort_subgroup_htn1;
 
 CREATE TABLE research_dev.poem_cohort_subgroup_htn1 AS
-SELECT DISTINCT a.apcd_id, a.dos, b.variable_name
+SELECT DISTINCT a.pers_id, a.dos, b.variable_name
 FROM research_dev.med_dx_poem a 
 JOIN research_dev.poem_covariates_dx_htn b 
     ON a.dx LIKE b.cd_value_sql
- where a.apcd_id in (select apcd_id from  research_dev.poem_cohort); 
+ where a.pers_id in (select pers_id from  research_dev.poem_cohort); 
     
 -- Link HTN DX to anchor dates 
 DROP TABLE IF EXISTS research_dev.poem_cohort_htn_sample;
 
 CREATE TABLE research_dev.poem_cohort_htn_sample AS
 SELECT 
-    a.apcd_id, 
+    a.pers_id, 
     a.ep_num,
     CASE 
         WHEN COUNT(b.dos) > 0 THEN 1 
@@ -188,11 +188,11 @@ SELECT
     END) AS htn_pulmonary
 FROM research_dev.poem_cohort a
 LEFT JOIN research_dev.poem_cohort_subgroup_htn1 b 
-    ON a.apcd_id = b.apcd_id 
+    ON a.pers_id = b.pers_id 
     AND b.dos <= a.anchor_date 
     AND (a.anchor_date - b.dos) BETWEEN 0 AND 280
 GROUP BY 
-    a.apcd_id, 
+    a.pers_id, 
     a.ep_num;  
  
 DROP TABLE IF EXISTS research_dev.poem_cohort_subgroup_htn1;
@@ -207,39 +207,39 @@ DROP TABLE IF EXISTS research_dev.poem_cohort_subgroup_mh1;
 
 CREATE TABLE research_dev.poem_cohort_subgroup_mh1 AS
 SELECT DISTINCT 
-    a.apcd_id, 
+    a.pers_id, 
     a.dos,
     b.mh_category
 FROM research_dev.med_dx_poem a 
 JOIN research_dev.poem_mh_dx b 
     ON a.dx = b.icd_dx
-  where a.apcd_id in (select apcd_id from  research_dev.poem_cohort);
+  where a.pers_id in (select pers_id from  research_dev.poem_cohort);
 
 -- mental health DX to anchor dates with categories
 DROP TABLE IF EXISTS research_dev.poem_cohort_mh_sample_detail;
 
 CREATE TABLE research_dev.poem_cohort_mh_sample_detail AS
 SELECT 
-    a.apcd_id, 
+    a.pers_id, 
     a.ep_num,
     b.mh_category,
     COUNT(b.dos) AS dx_count
 FROM research_dev.poem_cohort a
 INNER JOIN research_dev.poem_cohort_subgroup_mh1 b 
-    ON a.apcd_id = b.apcd_id 
+    ON a.pers_id = b.pers_id 
     AND b.dos <= a.anchor_date 
     AND (a.anchor_date - b.dos) BETWEEN 0 AND 280
 GROUP BY 
-    a.apcd_id, 
+    a.pers_id, 
     a.ep_num,
     b.mh_category;
 
--- one row per apcd_id and ep_num if they had any mh dx
+-- one row per pers_id and ep_num if they had any mh dx
 DROP TABLE IF EXISTS research_dev.poem_cohort_mh_sample;
 
 CREATE TABLE research_dev.poem_cohort_mh_sample AS
 SELECT 
-    a.apcd_id, 
+    a.pers_id, 
     a.ep_num,
     CASE 
         WHEN COUNT(b.dos) > 0 THEN 1 
@@ -252,14 +252,19 @@ SELECT
     MAX(CASE WHEN b.mh_category = 'Trauma- and stressor-related disorders'           THEN 1 ELSE 0 END) AS mh_trauma,
     MAX(CASE WHEN b.mh_category = 'Bipolar and related disorders'                    THEN 1 ELSE 0 END) AS mh_bipolar,
     MAX(CASE WHEN b.mh_category = 'Other - neurodevelopmental disorders'             THEN 1 ELSE 0 END) AS mh_neurodevelopmental,
-    MAX(CASE WHEN b.mh_category = 'Other - other disorders'                          THEN 1 ELSE 0 END) AS mh_other
+    MAX(CASE WHEN b.mh_category = 'Other - other disorders'                          THEN 1 ELSE 0 END) AS mh_other,
+    MAX(CASE WHEN REPLACE(f53.dx, '.', '') LIKE 'F53%'                               THEN 1 ELSE 0 END) AS mh_postpartum_f53
 FROM research_dev.poem_cohort a
 LEFT JOIN research_dev.poem_cohort_subgroup_mh1 b 
-    ON a.apcd_id = b.apcd_id 
+    ON a.pers_id = b.pers_id 
     AND b.dos <= a.anchor_date 
     AND (a.anchor_date - b.dos) BETWEEN 0 AND 280
+LEFT JOIN research_dev.med_dx_poem f53
+    ON a.pers_id = f53.pers_id
+    AND f53.dos <= a.anchor_date
+    AND (a.anchor_date - f53.dos) BETWEEN 0 AND 280
+    AND REPLACE(f53.dx, '.', '') LIKE 'F53%'
 GROUP BY 
-    a.apcd_id, 
-    a.ep_num;  
- 
-DROP TABLE IF EXISTS research_dev.poem_cohort_subgroup_mh1;
+    a.pers_id, 
+    a.ep_num;
+    

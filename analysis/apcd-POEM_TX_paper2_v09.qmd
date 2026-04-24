@@ -1,0 +1,851 @@
+---
+title: "POEM TX Paper 2 (APCD Data) - Mental Health"
+date: today
+format: 
+  docx:
+    df-print: paged
+    page-layout: full
+    fig-width: 12
+    fig-height: 8
+    out-width: 100%
+  html:
+    fig-width: 12
+    fig-height: 8
+editor: source
+execute: 
+  echo: false
+  warning: false
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup}
+#| echo: false
+#| warning: false
+
+# Load packages 
+pacman::p_load(RPostgres, DBI, keyring, janitor, tidyverse, readxl,
+               gtsummary, ggplot2, labelled, clipr, viridis, ggrepel, scales, ggthemes, flextable,
+               odbc, openxlsx, beepr, tictoc, here, lubridate, patchwork, cowplot)
+
+#### Setup File Paths ####
+current_dir <- here::here()
+
+#### Database Connection 
+greenplum_user = "jwozny"
+
+apcd <- dbConnect(RPostgres::Postgres(),
+                 dbname = "apcd_dev",
+                 user = "jwozny",
+                 password = key_get("apcd_dev", greenplum_user),
+                 host = "spgpcdplv001",
+                 bigint = "integer")
+
+options(scipen = 999)
+
+# Set Themes
+my_theme <- function() {
+  theme_minimal(base_size = 10) +
+    theme(
+      text = element_text(family = "sans", size=14),
+      axis.text.y = element_text(size = 12, face="plain", margin = margin(r = 10, unit = "pt")),
+      axis.title.y = element_text(size = 13, face = "bold", margin = margin(r = 20, unit = "pt")),
+      axis.title.x = element_text(size = 13, face = "bold", margin = margin(t = 20, unit = "pt")),
+      plot.caption = element_text(size = 12, face = "italic", margin = margin(t = 20, r=20, b = 5, l=20, unit = "pt"))
+    )
+}
+
+set_flextable_defaults(padding=2.5)
+theme_set(my_theme())
+
+FitFlextableToPage <- function(ft, pgwidth = 6.5){
+  ft_out <- ft %>% autofit()
+  ft_out <- width(ft_out, width = dim(ft_out)$widths*pgwidth /(flextable_dim(ft_out)$widths))
+  return(ft_out)
+}
+```
+
+```{r get-data}
+
+all.df <- dbGetQuery(apcd, "
+  select * from research_dev.poem_cohort_analysis2
+;")
+
+# Replace NAs
+all.df[sapply(all.df, is.numeric)] <- 
+  lapply(all.df[sapply(all.df, is.numeric)], function(x) ifelse(is.na(x), 0, x))
+```
+
+```{r clean-data}
+
+episodes <- 
+  all.df %>%
+  mutate(
+    age_group = case_when(
+      age <= 18 ~ "0-18",
+      age >= 19 & age <= 24 ~ "19-24",
+      age >= 25 & age <= 34 ~ "25-34",
+      age >= 35 & age <= 44 ~ "35-44",
+      age >= 45 & age <= 55 ~ "45-55",
+      TRUE ~ NA_character_
+    ),
+    state_tx = case_when(
+      state == "TX" ~ "TX",
+      state != "TX" ~ "Non-TX",
+      TRUE ~ "Unknown"
+    )
+  ) %>%
+  mutate(race_desc = recode(race_1,
+    "R5" = "White",
+    "R9" = "Other Race",
+    "R1" = "American Indian/Alaska Native",
+    "R2" = "Asian",
+    "R3" = "Black/African American",
+    "UN" = "Unknown/Not Specified",
+    "R4" = "Native Hawaiian or Other Pacific Islander",
+    .default = NA_character_
+  )) %>%
+  mutate(
+    los_less_60 = case_when(los <= 60 ~ 1, TRUE ~ 0),
+    monthly_anchor_date = as.Date(format(anchor_date, "%Y-%m-01"))
+  ) %>%
+  mutate(
+    me_desc = case_when(
+      me_code == "B" ~ "Pregnancy",
+      me_code == "C" ~ "Emergency",
+      me_code == "D" ~ "Other",
+      me_code == "F" ~ "Other",
+      me_code == "I" ~ "Institutional regular (CATS 1 3 or 4) (BP16 or 17)",
+      me_code == "N" ~ "FFCHE (Former Foster Child in Higher Education)",
+      me_code == "P" ~ "Three months prior",
+      me_code == "Q" ~ "QMD coverage (Medicare only)",
+      me_code == "R" ~ "Regular",
+      me_code == "T" ~ "1929(b) Base plan 20 MAO client",
+      me_code == "W" ~ "Healthy Texas Women",
+      TRUE ~ "Unknown"
+    )
+  )
+```
+
+```{r filter-cohort}
+
+cohort <- 
+  episodes %>% 
+  filter(age >= 19 & age <= 55) %>%
+  filter(enrolled_birth == 1) %>%
+  filter(state_tx == "TX") %>% 
+  filter(los <= 60) %>%
+  filter(prim_med_plan_mon == "Medicaid") %>%
+  filter(prim_med_plan_design_mon != "HTW")
+
+```
+
+```{r add-time-vars}
+
+cohort <- cohort %>%
+  mutate(
+    week_counter     = as.integer(difftime(anchor_date, as.Date("2019-01-01"), units = "weeks")),
+    biweekly_counter = as.integer(difftime(anchor_date, as.Date("2019-01-01"), units = "days") / 14),
+    monthly_counter  = as.integer(difftime(anchor_date, as.Date("2019-01-01"), units = "days") / 30),
+    anchor_date_week      = as.Date("2019-01-01") + week_counter * 7,
+    anchor_date_twoweeks  = as.Date("2019-01-01") + biweekly_counter * 14,
+    anchor_date_month     = floor_date(anchor_date, unit = "month")
+  )
+
+time_periods <- tibble::tibble(
+  period = factor(
+    c("Pre_period", "FFCRA", "Unwinding", "Exposure_Unwinding", "Extension"),
+    levels = c("Pre_period", "FFCRA", "Unwinding", "Exposure_Unwinding", "Extension")
+  ),
+  start = as.Date(c("2019-01-01", "2020-01-01", "2023-04-01", "2022-04-01", "2024-03-01")),
+  end   = as.Date(c("2019-12-31", "2022-03-31", "2023-08-31", "2023-08-31", "2025-12-31"))
+)
+
+covid_period <- tibble::tibble(
+  period = "COVID",
+  start  = as.Date("2020-03-01"),
+  end    = as.Date("2020-12-31")
+)
+
+period_rects <- time_periods %>% select(start, end, period)
+
+period_starts <- time_periods %>%
+  select(date = start, period) %>%
+  arrange(date) %>%
+  mutate(period = factor(period, levels = period))
+
+period_rects_non_overlap <- time_periods %>%
+  mutate(
+    end = case_when(
+      period == "Exposure_Unwinding" ~ as.Date("2023-03-31"),
+      TRUE ~ end
+    )
+  ) %>%
+  select(start, end, period)
+
+twelve_months_before <- as.Date("2025-12-31") %m-% months(12)
+
+cohort <- cohort %>%
+  mutate(
+    period_Pre = as.integer(
+      anchor_date >= (time_periods %>% filter(period == "Pre_period") %>% pull(start)) &
+      anchor_date <= (time_periods %>% filter(period == "Pre_period") %>% pull(end))
+    ),
+    period_FFCRA = as.integer(
+      anchor_date >= (time_periods %>% filter(period == "FFCRA") %>% pull(start)) &
+      anchor_date <= (time_periods %>% filter(period == "FFCRA") %>% pull(end))
+    ),
+    period_Unwinding = as.integer(
+      anchor_date >= (time_periods %>% filter(period == "Unwinding") %>% pull(start)) &
+      anchor_date <= (time_periods %>% filter(period == "Unwinding") %>% pull(end))
+    ),
+    period_Exposure_Unwinding = as.integer(
+      anchor_date >= (time_periods %>% filter(period == "Exposure_Unwinding") %>% pull(start)) &
+      anchor_date <= (time_periods %>% filter(period == "Exposure_Unwinding") %>% pull(end))
+    ),
+    period_COVID = as.integer(
+      anchor_date >= (covid_period %>% pull(start)) &
+      anchor_date <= (covid_period %>% pull(end))
+    ),
+    period_Extension = as.integer(
+      anchor_date >= (time_periods %>% filter(period == "Extension") %>% pull(start)) &
+      anchor_date <= (time_periods %>% filter(period == "Extension") %>% pull(end))
+    )
+  )
+
+ffcra_start_t <- as.integer(
+  difftime(time_periods %>% filter(period == "FFCRA") %>% pull(start),
+           as.Date("2019-01-01"), units = "days") / 14
+)
+
+exposure_start_t <- as.integer(
+  difftime(time_periods %>% filter(period == "Exposure_Unwinding") %>% pull(start),
+           as.Date("2019-01-01"), units = "days") / 14
+)
+
+unwinding_start_t <- as.integer(
+  difftime(time_periods %>% filter(period == "Unwinding") %>% pull(start),
+           as.Date("2019-01-01"), units = "days") / 14
+)
+
+extension_start_t <- as.integer(
+  difftime(time_periods %>% filter(period == "Extension") %>% pull(start),
+           as.Date("2019-01-01"), units = "days") / 14
+)
+
+cohort <- cohort %>%
+  mutate(
+    t = biweekly_counter,
+    t_after_FFCRA     = pmax(0, t - ffcra_start_t),
+    t_after_Exposure  = pmax(0, t - exposure_start_t),
+    t_after_Unwinding = pmax(0, t - unwinding_start_t),
+    t_after_Extension = pmax(0, t - extension_start_t)
+  )
+
+# Derived (non-overlapping) time period for descriptive tables
+# Pre:                    2019-01-01 – 2019-12-31
+# FFCRA:                  2020-01-01 – 2022-03-31
+# Exposure to Unwinding:  2022-04-01 – 2024-02-28  (covers Exposure_Unwinding + Unwinding, ends day before Extension)
+# Extension onwards:      2024-03-01 – present
+cohort <- cohort %>%
+  mutate(
+    time_period_derived = case_when(
+      anchor_date >= as.Date("2019-01-01") & anchor_date <= as.Date("2019-12-31") ~ "1. Pre",
+      anchor_date >= as.Date("2020-01-01") & anchor_date <= as.Date("2022-03-31") ~ "2. FFCRA",
+      anchor_date >= as.Date("2022-04-01") & anchor_date <= as.Date("2024-02-28") ~ "3. Exposure to Unwinding",
+      anchor_date >= as.Date("2024-03-01")                                        ~ "4. Extension onwards",
+      TRUE ~ NA_character_
+    ),
+    time_period_derived = factor(time_period_derived, levels = c(
+      "1. Pre",
+      "2. FFCRA",
+      "3. Exposure to Unwinding",
+      "4. Extension onwards"
+    ))
+  )
+```
+
+
+
+
+# Cohort 
+
+Right now, APCD data goes until Dec 2025, so filtered anchor dates for 1 year before then. At this point, it is not filtered to "Regular" Medicaid.
+
+```{r }
+cohort %>%
+  filter(anchor_date <= twelve_months_before) %>%
+  mutate(mh_sample = factor(mh_sample, levels = c(0, 1), labels = c("No", "Yes"))) %>%
+  select(
+    # Demographics
+    mh_sample, outcome_type, anchor_year, age_group, me_desc
+  ) %>%
+  tbl_summary(
+    label = list(
+      mh_sample            ~ "Mental Health Sample",
+      outcome_type         ~ "Birth Outcome",
+      anchor_year          ~ "Year",
+      age_group            ~ "Age Group",
+      me_desc              ~ "Enrollment Category"
+    )
+  ) %>%
+  as_flex_table() %>%
+  theme_box() %>%
+  padding(padding = 1.5) %>%
+  autofit() %>%
+  FitFlextableToPage()
+```
+
+{{< pagebreak >}}
+
+### Diagnoses & Outcomes by Mental Health Sample
+
+```{r }
+dx_labels_list <- list(
+  mh_anxiety           ~ "Prior: Anxiety and fear-related disorders",
+  mh_depression        ~ "Prior: Depressive disorders",
+  mh_suicidal          ~ "Prior: Suicidal ideation/attempt/self-harm",
+  mh_schizophrenia     ~ "Prior: Schizophrenia spectrum/psychotic disorders",
+  mh_trauma            ~ "Prior: Trauma- and stressor-related disorders",
+  mh_bipolar           ~ "Prior: Bipolar and related disorders",
+  mh_neurodevelopmental ~ "Prior: Neurodevelopmental disorders",
+  mh_other             ~ "Prior: Other disorders",
+  mh_postpartum_f53    ~ "Prior: Other postpartum disorder (F53x)",
+  out_mh_dx_12              ~ "Postpartum: Any MH diagnosis (0-12 months)",
+  out_mh_anxiety_12         ~ "Postpartum: Anxiety and fear-related disorders",
+  out_mh_depression_12      ~ "Postpartum: Depressive disorders",
+  out_mh_suicidal_12        ~ "Postpartum: Suicidal ideation/attempt/self-harm",
+  out_mh_schizophrenia_12   ~ "Postpartum: Schizophrenia spectrum/psychotic disorders",
+  out_mh_trauma_12          ~ "Postpartum: Trauma- and stressor-related disorders",
+  out_mh_bipolar_12         ~ "Postpartum: Bipolar and related disorders",
+  out_mh_neurodevelopmental_12 ~ "Postpartum: Neurodevelopmental disorders",
+  out_mh_other_12           ~ "Postpartum: Other disorders",
+  out_mh_postpartum_f53_12  ~ "Postpartum: Other postpartum disorder (F53x, 0-12 months)",
+  ce_after_12          ~ "Continuously enrolled 12 months post-delivery",
+  out_enroll_12        ~ "Enrolled at 12 months post-delivery",
+  out_mh_drug_12       ~ "MH prescription (0-12 months)",
+  out_therapy_12       ~ "Therapy session (0-12 months)",
+  out_any_outpatient_12 ~ "Any outpatient visit (0-12 months)",
+  total_visit_days_12  ~ "Total outpatient visit days (0-12 months)"
+)
+
+dx_vars_select <- c(
+  "mh_anxiety", "mh_depression", "mh_suicidal", "mh_schizophrenia",
+  "mh_trauma", "mh_bipolar", "mh_neurodevelopmental", "mh_other", "mh_postpartum_f53",
+  "out_mh_dx_12",
+  "out_mh_anxiety_12", "out_mh_depression_12", "out_mh_suicidal_12", "out_mh_schizophrenia_12",
+  "out_mh_trauma_12", "out_mh_bipolar_12", "out_mh_neurodevelopmental_12", "out_mh_other_12",
+  "out_mh_postpartum_f53_12",
+  "ce_after_12", "out_enroll_12",
+  "out_mh_drug_12", "out_therapy_12",
+  "out_any_outpatient_12", "total_visit_days_12"
+)
+
+t_overall <- cohort %>%
+  filter(anchor_date <= twelve_months_before) %>%
+  select(all_of(dx_vars_select)) %>%
+  tbl_summary(label = dx_labels_list) %>%
+  modify_header(stat_0 ~ "Overall")
+
+t_mh <- cohort %>%
+  filter(anchor_date <= twelve_months_before, mh_sample == 1) %>%
+  select(all_of(dx_vars_select)) %>%
+  tbl_summary(label = dx_labels_list) %>%
+  modify_header(stat_0 ~ "MH Sample")
+
+tbl_merge(
+  tbls = list(t_overall, t_mh),
+  tab_spanner = c("Overall", "MH Sample")
+) %>%
+  as_flex_table() %>%
+  theme_box() %>%
+  padding(padding = 1.5) %>%
+  autofit() %>%
+  FitFlextableToPage()
+```
+
+```{r make-subgroups-early}
+cohort_filtered <- cohort %>%
+  filter(anchor_date <= twelve_months_before)
+
+mh.subgroup <- cohort_filtered %>%
+  filter(mh_sample == 1)
+
+anxdep.subgroup <- cohort_filtered %>%
+  filter(mh_anxiety == 1 | mh_depression == 1)
+```
+
+{{< pagebreak >}}
+
+
+# Outcome Graphs
+
+## Postpartum MH Diagnoses Over Time - Overall
+
+```{r dx-over-time-overall}
+postpartum_dx_vars <- c(
+  "out_mh_dx_12",
+  "out_mh_anxiety_12", "out_mh_depression_12", "out_mh_suicidal_12",
+  "out_mh_schizophrenia_12", "out_mh_trauma_12", "out_mh_bipolar_12",
+  "out_mh_neurodevelopmental_12", "out_mh_other_12", "out_mh_postpartum_f53_12"
+)
+
+postpartum_dx_labels <- c(
+  out_mh_dx_12                 = "Any MH Diagnosis",
+  out_mh_anxiety_12            = "Anxiety",
+  out_mh_depression_12         = "Depression",
+  out_mh_suicidal_12           = "Suicidal ideation/self-harm",
+  out_mh_schizophrenia_12      = "Schizophrenia/psychotic",
+  out_mh_trauma_12             = "Trauma/stressor-related",
+  out_mh_bipolar_12            = "Bipolar",
+  out_mh_neurodevelopmental_12 = "Neurodevelopmental",
+  out_mh_other_12              = "Other",
+  out_mh_postpartum_f53_12     = "Other postpartum (F53x)"
+)
+
+cohort_filtered %>%
+  select(anchor_date_twoweeks, all_of(postpartum_dx_vars)) %>%
+  pivot_longer(cols = all_of(postpartum_dx_vars), names_to = "diagnosis", values_to = "value") %>%
+  mutate(diagnosis = recode(diagnosis, !!!postpartum_dx_labels)) %>%
+  group_by(anchor_date_twoweeks, diagnosis) %>%
+  summarise(rate = mean(value, na.rm = TRUE), .groups = "drop") %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = rate, color = diagnosis)) +
+  geom_line(linewidth = 0.8) +
+  geom_vline(
+    data = period_starts,
+    aes(xintercept = date, linetype = period),
+    color = "gray40",
+    linewidth = 0.6
+  ) +
+  scale_y_continuous(labels = percent) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "Postpartum MH Diagnoses Over Time - Overall",
+    x = "Date",
+    y = "% Episodes with Diagnosis",
+    color = "Diagnosis",
+    linetype = "Period Start"
+  ) +
+  my_theme()
+```
+
+{{< pagebreak >}}
+
+## Postpartum MH Diagnoses Over Time - MH Sample
+
+```{r dx-over-time-mh}
+mh.subgroup %>%
+  select(anchor_date_twoweeks, all_of(postpartum_dx_vars)) %>%
+  pivot_longer(cols = all_of(postpartum_dx_vars), names_to = "diagnosis", values_to = "value") %>%
+  mutate(diagnosis = recode(diagnosis, !!!postpartum_dx_labels)) %>%
+  group_by(anchor_date_twoweeks, diagnosis) %>%
+  summarise(rate = mean(value, na.rm = TRUE), .groups = "drop") %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = rate, color = diagnosis)) +
+  geom_line(linewidth = 0.8) +
+  geom_vline(
+    data = period_starts,
+    aes(xintercept = date, linetype = period),
+    color = "gray40",
+    linewidth = 0.6
+  ) +
+  scale_y_continuous(labels = percent) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "Postpartum MH Diagnoses Over Time - MH Sample",
+    x = "Date",
+    y = "% Episodes with Diagnosis",
+    color = "Diagnosis",
+    linetype = "Period Start"
+  ) +
+  my_theme()
+```
+
+{{< pagebreak >}}
+
+## MH Prescriptions 0-12 Months Postpartum
+
+```{r mh-drug}
+
+drug_overall <- cohort_filtered %>%
+  group_by(anchor_date_twoweeks) %>%
+  summarise(rate = mean(out_mh_drug_12, na.rm = TRUE), .groups = "drop") %>%
+  mutate(group = "Overall")
+
+drug_mh <- mh.subgroup %>%
+  group_by(anchor_date_twoweeks) %>%
+  summarise(rate = mean(out_mh_drug_12, na.rm = TRUE), .groups = "drop") %>%
+  mutate(group = "MH Subgroup")
+
+drug_anxdep <- anxdep.subgroup %>%
+  group_by(anchor_date_twoweeks) %>%
+  summarise(rate = mean(out_mh_drug_12, na.rm = TRUE), .groups = "drop") %>%
+  mutate(group = "Anxiety/Depression Subgroup")
+
+bind_rows(drug_overall, drug_mh, drug_anxdep) %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = rate, linetype = group, linewidth = group)) +
+  geom_line() +
+  geom_vline(
+    data = period_starts,
+    aes(xintercept = date, color = period),
+    linetype = "dashed",
+    linewidth = 0.75
+  ) +
+  scale_y_continuous(labels = percent, limits = c(0, .5)) +
+  scale_color_brewer(palette = "Set2") +
+  scale_linetype_manual(values = c("Overall" = "dashed", "MH Subgroup" = "solid", "Anxiety/Depression Subgroup" = "dotted")) +
+  scale_linewidth_manual(values = c("Overall" = 0.8, "MH Subgroup" = 1.0, "Anxiety/Depression Subgroup" = 1.0)) +
+  labs(
+    title = "MH Prescription 0-12 Months Postpartum",
+    x = "Date",
+    y = "% Episodes with MH Prescription",
+    color = "Period Start",
+    linetype = "Group"
+  ) +
+  guides(linewidth = "none")
+```
+
+{{< pagebreak >}}
+
+## Therapy Sessions 0-12 Months Postpartum
+
+```{r therapy}
+
+therapy_overall <- cohort_filtered %>%
+  group_by(anchor_date_twoweeks) %>%
+  summarise(rate = mean(out_therapy_12, na.rm = TRUE), .groups = "drop") %>%
+  mutate(group = "Overall")
+
+therapy_mh <- mh.subgroup %>%
+  group_by(anchor_date_twoweeks) %>%
+  summarise(rate = mean(out_therapy_12, na.rm = TRUE), .groups = "drop") %>%
+  mutate(group = "MH Subgroup")
+
+therapy_anxdep <- anxdep.subgroup %>%
+  group_by(anchor_date_twoweeks) %>%
+  summarise(rate = mean(out_therapy_12, na.rm = TRUE), .groups = "drop") %>%
+  mutate(group = "Anxiety/Depression Subgroup")
+
+bind_rows(therapy_overall, therapy_mh, therapy_anxdep) %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = rate, linetype = group, linewidth = group)) +
+  geom_line() +
+  geom_vline(
+    data = period_starts,
+    aes(xintercept = date, color = period),
+    linetype = "dashed",
+    linewidth = 0.75
+  ) +
+  scale_y_continuous(labels = percent, limits = c(0, .5)) +
+  scale_color_brewer(palette = "Set2") +
+  scale_linetype_manual(values = c("Overall" = "dashed", "MH Subgroup" = "solid", "Anxiety/Depression Subgroup" = "dotted")) +
+  scale_linewidth_manual(values = c("Overall" = 0.8, "MH Subgroup" = 1.0, "Anxiety/Depression Subgroup" = 1.0)) +
+  labs(
+    title = "Therapy 0-12 Months Postpartum",
+    x = "Date",
+    y = "% Episodes with Therapy Session",
+    color = "Period Start",
+    linetype = "Group"
+  ) +
+  guides(linewidth = "none")
+```
+
+{{< pagebreak >}}
+
+## Any Outpatient Visit 0-12 Months Postpartum
+
+```{r outpatient-any}
+
+op_overall <- cohort_filtered %>%
+  group_by(anchor_date_twoweeks) %>%
+  summarise(rate = mean(out_any_outpatient_12, na.rm = TRUE), .groups = "drop") %>%
+  mutate(group = "Overall")
+
+op_mh <- mh.subgroup %>%
+  group_by(anchor_date_twoweeks) %>%
+  summarise(rate = mean(out_any_outpatient_12, na.rm = TRUE), .groups = "drop") %>%
+  mutate(group = "MH Subgroup")
+
+bind_rows(op_overall, op_mh) %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = rate, linetype = group, linewidth = group)) +
+  geom_line() +
+  geom_vline(
+    data = period_starts,
+    aes(xintercept = date, color = period),
+    linetype = "dashed",
+    linewidth = 0.75
+  ) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  scale_color_brewer(palette = "Set2") +
+  scale_linetype_manual(values = c("Overall" = "dashed", "MH Subgroup" = "solid")) +
+  scale_linewidth_manual(values = c("Overall" = 0.8, "MH Subgroup" = 1.0)) +
+  labs(
+    title = "Any Outpatient Visit 0-12 Months Postpartum",
+    x = "Date",
+    y = "% Episodes with Any Outpatient Visit",
+    color = "Period Start",
+    linetype = "Group"
+  ) +
+  guides(linewidth = "none")
+```
+
+{{< pagebreak >}}
+
+## Average Outpatient Visit Days 0-12 Months Postpartum
+
+```{r outpatient-visit-days}
+
+vd_overall <- cohort_filtered %>%
+  group_by(anchor_date_twoweeks) %>%
+  summarise(avg_visits = mean(total_visit_days_12, na.rm = TRUE), .groups = "drop") %>%
+  mutate(group = "Overall")
+
+vd_mh <- mh.subgroup %>%
+  group_by(anchor_date_twoweeks) %>%
+  summarise(avg_visits = mean(total_visit_days_12, na.rm = TRUE), .groups = "drop") %>%
+  mutate(group = "MH Subgroup")
+
+bind_rows(vd_overall, vd_mh) %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = avg_visits, linetype = group, linewidth = group)) +
+  geom_line() +
+  geom_vline(
+    data = period_starts,
+    aes(xintercept = date, color = period),
+    linetype = "dashed",
+    linewidth = 0.75
+  ) +
+  scale_color_brewer(palette = "Set2") +
+  scale_linetype_manual(values = c("Overall" = "dashed", "MH Subgroup" = "solid")) +
+  scale_linewidth_manual(values = c("Overall" = 0.8, "MH Subgroup" = 1.0)) +
+  labs(
+    title = "Average Outpatient Visit Days 0-12 Months Postpartum",
+    x = "Date",
+    y = "Avg. Outpatient Visit Days",
+    color = "Period Start",
+    linetype = "Group"
+  ) +
+  guides(linewidth = "none")
+```
+
+{{< pagebreak >}}
+
+## Average MH Prescription Days Supply 0-12 Months Postpartum
+
+```{r mh-drug-days-supply}
+
+ds_overall <- cohort_filtered %>%
+  group_by(anchor_date_twoweeks) %>%
+  summarise(avg_days = mean(out_mh_drug_avg_days_supply_12, na.rm = TRUE), .groups = "drop") %>%
+  mutate(group = "Overall")
+
+ds_mh <- mh.subgroup %>%
+  group_by(anchor_date_twoweeks) %>%
+  summarise(avg_days = mean(out_mh_drug_avg_days_supply_12, na.rm = TRUE), .groups = "drop") %>%
+  mutate(group = "MH Subgroup")
+
+bind_rows(ds_overall, ds_mh) %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = avg_days, linetype = group, linewidth = group)) +
+  geom_line() +
+  geom_vline(
+    data = period_starts,
+    aes(xintercept = date, color = period),
+    linetype = "dashed",
+    linewidth = 0.75
+  ) +
+  scale_color_brewer(palette = "Set2") +
+  scale_linetype_manual(values = c("Overall" = "dashed", "MH Subgroup" = "solid")) +
+  scale_linewidth_manual(values = c("Overall" = 0.8, "MH Subgroup" = 1.0)) +
+  labs(
+    title = "Average MH Prescription Days Supply 0-12 Months Postpartum",
+    x = "Date",
+    y = "Avg. Days Supply per Script",
+    color = "Period Start",
+    linetype = "Group"
+  ) +
+  guides(linewidth = "none")
+```
+
+{{< pagebreak >}}
+
+## Average MH Prescription Days Supply 0-12 Months Postpartum (Among Those with a Prescription)
+
+*Restricted to episodes where `out_mh_drug_avg_days_supply_12 > 0`, aka those who had at least one MH prescription.*
+
+```{r mh-drug-days-supply-filtered}
+
+ds_filtered_overall <- cohort_filtered %>%
+  filter(out_mh_drug_avg_days_supply_12 > 0) %>%
+  group_by(anchor_date_twoweeks) %>%
+  summarise(avg_days = mean(out_mh_drug_avg_days_supply_12, na.rm = TRUE), .groups = "drop") %>%
+  mutate(group = "Overall")
+
+ds_filtered_mh <- mh.subgroup %>%
+  filter(out_mh_drug_avg_days_supply_12 > 0) %>%
+  group_by(anchor_date_twoweeks) %>%
+  summarise(avg_days = mean(out_mh_drug_avg_days_supply_12, na.rm = TRUE), .groups = "drop") %>%
+  mutate(group = "MH Subgroup")
+
+bind_rows(ds_filtered_overall, ds_filtered_mh) %>%
+  ggplot(aes(x = anchor_date_twoweeks, y = avg_days, linetype = group, linewidth = group)) +
+  geom_line() +
+  geom_vline(
+    data = period_starts,
+    aes(xintercept = date, color = period),
+    linetype = "dashed",
+    linewidth = 0.75
+  ) +
+  scale_color_brewer(palette = "Set2") +
+  scale_linetype_manual(values = c("Overall" = "dashed", "MH Subgroup" = "solid")) +
+  scale_linewidth_manual(values = c("Overall" = 0.8, "MH Subgroup" = 1.0)) +
+  labs(
+    title = "Average MH Prescription Days Supply 0-12 Months Postpartum",
+    subtitle = "Among episodes with at least one MH prescription (excludes zeros)",
+    x = "Date",
+    y = "Avg. Days Supply per Script",
+    color = "Period Start",
+    linetype = "Group"
+  ) +
+  guides(linewidth = "none")
+```
+
+{{< pagebreak >}}
+
+# Tables
+
+### Postpartum MH Diagnoses by Time Period
+
+#### Overall
+
+```{r }
+
+cohort_filtered %>%
+  filter(!is.na(time_period_derived)) %>%
+  select(
+    time_period_derived,
+    out_mh_dx_12,
+    out_mh_anxiety_12, out_mh_depression_12, out_mh_suicidal_12,
+    out_mh_schizophrenia_12, out_mh_trauma_12, out_mh_bipolar_12,
+    out_mh_neurodevelopmental_12, out_mh_other_12, out_mh_postpartum_f53_12
+  ) %>%
+  tbl_summary(
+    by = time_period_derived,
+    label = list(
+      out_mh_dx_12              ~ "Any MH diagnosis (0-12 months)",
+      out_mh_anxiety_12         ~ "Anxiety and fear-related disorders",
+      out_mh_depression_12      ~ "Depressive disorders",
+      out_mh_suicidal_12        ~ "Suicidal ideation/attempt/self-harm",
+      out_mh_schizophrenia_12   ~ "Schizophrenia spectrum/psychotic disorders",
+      out_mh_trauma_12          ~ "Trauma- and stressor-related disorders",
+      out_mh_bipolar_12         ~ "Bipolar and related disorders",
+      out_mh_neurodevelopmental_12 ~ "Neurodevelopmental disorders",
+      out_mh_other_12           ~ "Other disorders",
+      out_mh_postpartum_f53_12  ~ "Other postpartum disorder (F53x)"
+    ),
+    statistic = list(all_categorical() ~ "{n} ({p}%)")
+  ) %>%
+  as_flex_table() %>%
+  theme_box() %>%
+  padding(padding = 1.5) %>%
+  autofit() %>%
+  FitFlextableToPage()
+```
+
+#### MH Sample
+
+```{r }
+
+mh.subgroup %>%
+  filter(!is.na(time_period_derived)) %>%
+  select(
+    time_period_derived,
+    out_mh_dx_12,
+    out_mh_anxiety_12, out_mh_depression_12, out_mh_suicidal_12,
+    out_mh_schizophrenia_12, out_mh_trauma_12, out_mh_bipolar_12,
+    out_mh_neurodevelopmental_12, out_mh_other_12, out_mh_postpartum_f53_12
+  ) %>%
+  tbl_summary(
+    by = time_period_derived,
+    label = list(
+      out_mh_dx_12              ~ "Any MH diagnosis (0-12 months)",
+      out_mh_anxiety_12         ~ "Anxiety and fear-related disorders",
+      out_mh_depression_12      ~ "Depressive disorders",
+      out_mh_suicidal_12        ~ "Suicidal ideation/attempt/self-harm",
+      out_mh_schizophrenia_12   ~ "Schizophrenia spectrum/psychotic disorders",
+      out_mh_trauma_12          ~ "Trauma- and stressor-related disorders",
+      out_mh_bipolar_12         ~ "Bipolar and related disorders",
+      out_mh_neurodevelopmental_12 ~ "Neurodevelopmental disorders",
+      out_mh_other_12           ~ "Other disorders",
+      out_mh_postpartum_f53_12  ~ "Other postpartum disorder (F53x)"
+    ),
+    statistic = list(all_categorical() ~ "{n} ({p}%)")
+  ) %>%
+  as_flex_table() %>%
+  theme_box() %>%
+  padding(padding = 1.5) %>%
+  autofit() %>%
+  FitFlextableToPage()
+```
+
+{{< pagebreak >}}
+
+### Therapy & MH Prescriptions by Time Period
+
+#### Overall
+
+```{r }
+
+cohort_filtered %>%
+  filter(!is.na(time_period_derived)) %>%
+  select(
+    time_period_derived,
+    out_therapy_12,
+    out_mh_drug_12
+  ) %>%
+  tbl_summary(
+    by = time_period_derived,
+    label = list(
+      out_therapy_12  ~ "Therapy session (0-12 months)",
+      out_mh_drug_12  ~ "MH prescription (0-12 months)"
+    ),
+    statistic = list(all_categorical() ~ "{n} ({p}%)")
+  ) %>%
+  as_flex_table() %>%
+  theme_box() %>%
+  padding(padding = 1.5) %>%
+  autofit() %>%
+  FitFlextableToPage()
+```
+
+#### MH Sample
+
+```{r }
+
+mh.subgroup %>%
+  filter(!is.na(time_period_derived)) %>%
+  select(
+    time_period_derived,
+    out_therapy_12,
+    out_mh_drug_12
+  ) %>%
+  tbl_summary(
+    by = time_period_derived,
+    label = list(
+      out_therapy_12  ~ "Therapy session (0-12 months)",
+      out_mh_drug_12  ~ "MH prescription (0-12 months)"
+    ),
+    statistic = list(all_categorical() ~ "{n} ({p}%)")
+  ) %>%
+  as_flex_table() %>%
+  theme_box() %>%
+  padding(padding = 1.5) %>%
+  autofit() %>%
+  FitFlextableToPage()
+```
+
+{{< pagebreak >}}
+
+# Changelog: 
+
+- 4/15/2026: Added anxiety/depression subgroup (prenatal) with therapy and prescription graphs. Added F53x postpartum disorder indicator to DX tables and summary. Added avg MH prescription days supply graph. Added outpatient variables to summary table.
+- 4/13/2026: Updated data through Dec 2025. Added outpatient outcome graphs (% any visit, avg visit days) with Overall and MH subgroup.
+- 3/23/2026: Added derived (non-overlapping) time period variable. Added graphs and tables for postpartum DX over time
+- 3/17/2026: Added "Extension" time period (starting March 1, 2024). Added DX after delivery too
+- 3/10/2026: Added postpartum MH DX outcomes and clarified language on prior labels. 
