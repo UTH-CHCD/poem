@@ -937,7 +937,8 @@ select a.*,
    ;
   
   
---- link to episodes and count
+
+--- link to episodes and count: 0 to 12 months (full window)
 DROP TABLE IF EXISTS CHCDWORK.dbo.poem_outcomes_outpatient_12;
 
 SELECT
@@ -964,6 +965,66 @@ LEFT JOIN CHCDWORK.dbo.poem_outcomes_outpatient_categories op
 GROUP BY
     c.client_nbr,
     c.ep_num;
+
+
+--- link to episodes and count: 0 to 61 days
+DROP TABLE IF EXISTS CHCDWORK.dbo.poem_outcomes_outpatient_0_61;
+
+SELECT
+    c.client_nbr,
+    c.ep_num,
+    MAX(op.pe) AS out_pe_0_61,
+    MAX(op.prev) AS out_prev_0_61,
+    MAX(op.contr) AS out_contr_0_61,
+    MAX(op.mental) AS out_mental_0_61,
+    MAX(op.other) AS out_other_0_61,
+    CASE WHEN COUNT(op.client_nbr) > 0 THEN 1 ELSE 0 END AS out_any_outpatient_0_61,
+    COUNT(DISTINCT CASE WHEN op.pe = 1 THEN op.date_ END) AS pe_visit_days_0_61,
+    COUNT(DISTINCT CASE WHEN op.prev = 1 THEN op.date_ END) AS prev_visit_days_0_61,
+    COUNT(DISTINCT CASE WHEN op.contr = 1 THEN op.date_ END) AS contr_visit_days_0_61,
+    COUNT(DISTINCT CASE WHEN op.mental = 1 THEN op.date_ END) AS mental_visit_days_0_61,
+    COUNT(DISTINCT CASE WHEN op.other = 1 THEN op.date_ END) AS other_visit_days_0_61,
+    COUNT(DISTINCT op.date_) AS total_visit_days_0_61,
+    COUNT(op.client_nbr) AS total_claims_0_61
+INTO CHCDWORK.dbo.poem_outcomes_outpatient_0_61
+FROM chcdwork.dbo.poem_cohort c
+LEFT JOIN CHCDWORK.dbo.poem_outcomes_outpatient_categories op
+    ON c.client_nbr = op.client_nbr
+    AND op.date_ BETWEEN DATEADD(day, 1, c.anchor_date) AND DATEADD(day, 61, c.anchor_date)
+GROUP BY
+    c.client_nbr,
+    c.ep_num;
+
+
+--- link to episodes and count: 61 days to 12 months
+DROP TABLE IF EXISTS CHCDWORK.dbo.poem_outcomes_outpatient_61_12;
+
+SELECT
+    c.client_nbr,
+    c.ep_num,
+    MAX(op.pe) AS out_pe_61_12,
+    MAX(op.prev) AS out_prev_61_12,
+    MAX(op.contr) AS out_contr_61_12,
+    MAX(op.mental) AS out_mental_61_12,
+    MAX(op.other) AS out_other_61_12,
+    CASE WHEN COUNT(op.client_nbr) > 0 THEN 1 ELSE 0 END AS out_any_outpatient_61_12,
+    COUNT(DISTINCT CASE WHEN op.pe = 1 THEN op.date_ END) AS pe_visit_days_61_12,
+    COUNT(DISTINCT CASE WHEN op.prev = 1 THEN op.date_ END) AS prev_visit_days_61_12,
+    COUNT(DISTINCT CASE WHEN op.contr = 1 THEN op.date_ END) AS contr_visit_days_61_12,
+    COUNT(DISTINCT CASE WHEN op.mental = 1 THEN op.date_ END) AS mental_visit_days_61_12,
+    COUNT(DISTINCT CASE WHEN op.other = 1 THEN op.date_ END) AS other_visit_days_61_12,
+    COUNT(DISTINCT op.date_) AS total_visit_days_61_12,
+    COUNT(op.client_nbr) AS total_claims_61_12
+INTO CHCDWORK.dbo.poem_outcomes_outpatient_61_12
+FROM chcdwork.dbo.poem_cohort c
+LEFT JOIN CHCDWORK.dbo.poem_outcomes_outpatient_categories op
+    ON c.client_nbr = op.client_nbr
+    AND op.date_ BETWEEN DATEADD(day, 62, c.anchor_date) AND DATEADD(day, 365, c.anchor_date)
+GROUP BY
+    c.client_nbr,
+    c.ep_num;
+
+
    
 --- provide summary of combos
  drop table if exists CHCDWORK.dbo.poem_outcomes_outpatient_categories_summary;  

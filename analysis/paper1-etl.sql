@@ -38,6 +38,34 @@ SELECT DISTINCT
     other_visit_days_12,
     total_visit_days_12,
     total_claims_12,
+    -- 0-61 day outpatient window
+    op61.out_pe_0_61,
+    op61.out_prev_0_61,
+    op61.out_contr_0_61,
+    op61.out_mental_0_61,
+    op61.out_other_0_61,
+    op61.out_any_outpatient_0_61,
+    op61.pe_visit_days_0_61,
+    op61.prev_visit_days_0_61,
+    op61.contr_visit_days_0_61,
+    op61.mental_visit_days_0_61,
+    op61.other_visit_days_0_61,
+    op61.total_visit_days_0_61,
+    op61.total_claims_0_61,
+    -- 61 days to 12 months outpatient window
+    op61_12.out_pe_61_12,
+    op61_12.out_prev_61_12,
+    op61_12.out_contr_61_12,
+    op61_12.out_mental_61_12,
+    op61_12.out_other_61_12,
+    op61_12.out_any_outpatient_61_12,
+    op61_12.pe_visit_days_61_12,
+    op61_12.prev_visit_days_61_12,
+    op61_12.contr_visit_days_61_12,
+    op61_12.mental_visit_days_61_12,
+    op61_12.other_visit_days_61_12,
+    op61_12.total_visit_days_61_12,
+    op61_12.total_claims_61_12,
     smm_weight, 
     no_transfusion_weight,
     enroll.out_enroll_12,
@@ -74,6 +102,12 @@ LEFT JOIN CHCDWORK.dbo.poem_outcomes_out_htn_med hm
 LEFT JOIN CHCDWORK.dbo.poem_outcomes_outpatient_12 op  
     ON a.client_nbr = op.client_nbr 
     AND a.ep_num = op.ep_num
+LEFT JOIN CHCDWORK.dbo.poem_outcomes_outpatient_0_61 op61
+    ON a.client_nbr = op61.client_nbr
+    AND a.ep_num = op61.ep_num
+LEFT JOIN CHCDWORK.dbo.poem_outcomes_outpatient_61_12 op61_12
+    ON a.client_nbr = op61_12.client_nbr
+    AND a.ep_num = op61_12.ep_num
 LEFT JOIN CHCDWORK.dbo.poem_cohort_weights w
     ON a.client_nbr = w.client_nbr 
     AND a.ep_num = w.ep_num
