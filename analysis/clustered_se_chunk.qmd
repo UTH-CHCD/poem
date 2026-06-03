@@ -1,0 +1,176 @@
+```{r clustered-se}
+
+# ── Map each model name → the dataset it was fit on ──────────────────────────
+# Models prefixed diab_* use diab.subgroup; htn_* use htn.subgroup.
+# Both datasets must have a client_nbr column for clustering.
+
+model_data <- list(
+  diab = diab.subgroup,
+  htn  = htn.subgroup
+)
+
+# ── Helper: tidy a model using clustered SEs ─────────────────────────────────
+tidy_clustered <- function(model, data, cluster_var = "client_nbr") {
+
+  is_nb <- inherits(model, "negbin")
+
+  # Clustered variance-covariance matrix
+  cl_vcov <- sandwich::vcovCL(model, cluster = as.formula(paste0("~", cluster_var)), data = data)
+
+  # coeftest gives us SE / t / p with the new vcov
+  ct <- lmtest::coeftest(model, vcov = cl_vcov)
+
+  # Build tidy-style data frame
+  coef_df <- as.data.frame(ct[, , drop = FALSE])
+  colnames(coef_df) <- c("estimate", "std.error", "statistic", "p.value")
+  coef_df$term <- rownames(coef_df)
+  rownames(coef_df) <- NULL
+
+  # 95% CIs from the clustered vcov
+  ci <- lmtest::coefci(model, vcov = cl_vcov, level = 0.95)
+  coef_df$conf.low  <- ci[, 1]
+  coef_df$conf.high <- ci[, 2]
+
+  # For negative binomial: exponentiate estimate + CIs (IRR)
+  if (is_nb) {
+    coef_df <- coef_df %>%
+      mutate(
+        conf.low  = exp(conf.low),
+        conf.high = exp(conf.high),
+        estimate  = exp(estimate)
+      )
+  }
+
+  coef_df %>% mutate(irr = is_nb)
+}
+
+# ── Build clustered-SE results data frame ────────────────────────────────────
+lm_coefs_clustered_df <- imap_dfr(
+  models,
+  ~ {
+    # pick the right dataset based on model name prefix
+    grp  <- if (grepl("^diab_", .y)) "diab" else "htn"
+    dat  <- model_data[[grp]]
+
+    tidy_clustered(.x, dat, cluster_var = "client_nbr") %>%
+      mutate(model = .y)
+  },
+  .id = NULL
+) %>%
+  dplyr::select(
+    model, term, any_of("irr"),
+    estimate, std.error, statistic, p.value,
+    conf.low, conf.high
+  ) %>%
+  rename(
+    std_error = std.error,
+    t_value   = statistic,
+    p_value   = p.value,
+    conf_low  = conf.low,
+    conf_high = conf.high
+  ) %>%
+  mutate(
+    group = case_when(
+      grepl("^diab_", model) ~ "diab",
+      grepl("^htn_",  model) ~ "htn",
+      TRUE ~ NA_character_
+    ),
+    adjustment = case_when(
+      grepl("_adj$",   model) ~ "adj",
+      grepl("_unadj$", model) ~ "unadj",
+      TRUE ~ NA_character_
+    ),
+    se_type = "clustered"
+  )
+
+# Tag the original results for the comparison join
+lm_coefs_original <- lm_coefs_df %>% mutate(se_type = "standard")
+
+# ── Side-by-side comparison ───────────────────────────────────────────────────
+se_comparison_df <-
+  bind_rows(lm_coefs_original, lm_coefs_clustered_df) %>%
+  dplyr::select(model, term, se_type, estimate, std_error, p_value, conf_low, conf_high) %>%
+  pivot_wider(
+    names_from  = se_type,
+    values_from = c(std_error, p_value, conf_low, conf_high)
+  ) %>%
+  mutate(
+    se_ratio       = std_error_clustered / std_error_standard,   # >1 means clustering inflated SE
+    ci_width_std   = conf_high_standard  - conf_low_standard,
+    ci_width_clust = conf_high_clustered - conf_low_clustered
+  ) %>%
+  arrange(model, term)
+
+```
+
+```{r compare-se-table}
+
+# ── Flextable: main ITS terms only, adjusted models only ─────────────────────
+its_terms <- c("t", "period_FFCRA", "period_Exposure_Unwinding",
+               "t_after_FFCRA", "t_after_Exposure")
+
+term_labels <- c(
+  t                            = "Pre-trend",
+  period_FFCRA                 = "Level Change, FFCRA",
+  t_after_FFCRA                = "Trend Change, FFCRA",
+  period_Exposure_Unwinding    = "Level Change, Exposure Unwinding",
+  t_after_Exposure             = "Trend Change, Exposure Unwinding"
+)
+
+se_comparison_df %>%
+  filter(grepl("_adj$", model), term %in% its_terms) %>%
+  mutate(
+    term  = recode(term, !!!term_labels),
+    model = gsub("_adj$", "", model)   # tidy up label
+  ) %>%
+  dplyr::select(
+    model, term, estimate,
+    std_error_standard, std_error_clustered, se_ratio,
+    p_value_standard,   p_value_clustered,
+    conf_low_standard,  conf_high_standard,
+    conf_low_clustered, conf_high_clustered
+  ) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 4))) %>%
+  flextable() %>%
+  set_header_labels(
+    model                = "Model",
+    term                 = "Term",
+    estimate             = "Estimate",
+    std_error_standard   = "SE (Standard)",
+    std_error_clustered  = "SE (Clustered)",
+    se_ratio             = "SE Ratio\n(Clust/Std)",
+    p_value_standard     = "p (Standard)",
+    p_value_clustered    = "p (Clustered)",
+    conf_low_standard    = "CI Low\n(Standard)",
+    conf_high_standard   = "CI High\n(Standard)",
+    conf_low_clustered   = "CI Low\n(Clustered)",
+    conf_high_clustered  = "CI High\n(Clustered)"
+  ) %>%
+  theme_box() %>%
+  bold(part = "header") %>%
+  color(
+    ~ se_ratio > 1.10,           # highlight rows where clustering meaningfully inflated SE
+    j = "se_ratio",
+    color = "firebrick"
+  ) %>%
+  autofit() %>%
+  FitFlextableToPage()
+
+```
+
+```{r export-clustered}
+
+# Add clustered results to the Excel export
+lm_results_clustered_df <- lm_coefs_clustered_df %>%
+  left_join(lm_fit_df, by = "model") %>%
+  mutate(state = "texas", measure = "regression_clustered_se", use = "table")
+
+# Append sheets to the existing output file
+wb <- openxlsx::loadWorkbook(output_file)
+openxlsx::addWorksheet(wb, "lm_results_clustered_se")
+openxlsx::addWorksheet(wb, "se_comparison")
+openxlsx::writeData(wb, "lm_results_clustered_se", lm_results_clustered_df)
+openxlsx::writeData(wb, "se_comparison",            se_comparison_df)
+openxlsx::saveWorkbook(wb, output_file, overwrite = TRUE)
+
+```
